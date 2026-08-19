@@ -38,7 +38,8 @@ impl Config {
             .parse::<SocketAddr>()
             .with_context(|| format!("invalid CHATGPT_BRIDGE_BIND={bind_raw:?}"))?;
 
-        let default_timeout_ms = parse_u64("CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
+        let default_timeout_ms =
+            parse_u64("CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
         let max_timeout_ms = parse_u64("CHATGPT_BRIDGE_MAX_TIMEOUT_MS", MAX_TIMEOUT_MS)?;
         if default_timeout_ms == 0 || max_timeout_ms == 0 {
             bail!("command timeouts must be greater than zero");
@@ -47,7 +48,8 @@ impl Config {
             bail!("CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS cannot exceed CHATGPT_BRIDGE_MAX_TIMEOUT_MS");
         }
 
-        let max_output_bytes = parse_usize("CHATGPT_BRIDGE_MAX_OUTPUT_BYTES", DEFAULT_MAX_OUTPUT_BYTES)?;
+        let max_output_bytes =
+            parse_usize("CHATGPT_BRIDGE_MAX_OUTPUT_BYTES", DEFAULT_MAX_OUTPUT_BYTES)?;
         let max_file_bytes = parse_usize("CHATGPT_BRIDGE_MAX_FILE_BYTES", DEFAULT_MAX_FILE_BYTES)?;
         if max_output_bytes == 0 || max_file_bytes == 0 {
             bail!("output and file byte limits must be greater than zero");
