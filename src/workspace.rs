@@ -34,9 +34,9 @@ pub async fn resolve_write_target(
 
     match fs::symlink_metadata(&candidate).await {
         Ok(_) => {
-            let canonical = fs::canonicalize(&candidate)
-                .await
-                .map_err(|error| ApiError::internal(format!("failed to resolve file path: {error}")))?;
+            let canonical = fs::canonicalize(&candidate).await.map_err(|error| {
+                ApiError::internal(format!("failed to resolve file path: {error}"))
+            })?;
             ensure_inside(root, &canonical)?;
             return Ok(canonical);
         }
@@ -72,20 +72,22 @@ pub async fn resolve_write_target(
 
     let canonical_ancestor = fs::canonicalize(&existing_ancestor)
         .await
-        .map_err(|error| ApiError::internal(format!("failed to resolve parent directory: {error}")))?;
+        .map_err(|error| {
+            ApiError::internal(format!("failed to resolve parent directory: {error}"))
+        })?;
     ensure_inside(root, &canonical_ancestor)?;
 
     if create_parents {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|error| ApiError::internal(format!("failed to create parent directories: {error}")))?;
+        fs::create_dir_all(parent).await.map_err(|error| {
+            ApiError::internal(format!("failed to create parent directories: {error}"))
+        })?;
     } else if fs::symlink_metadata(parent).await.is_err() {
         return Err(ApiError::not_found("parent directory does not exist"));
     }
 
-    let canonical_parent = fs::canonicalize(parent)
-        .await
-        .map_err(|error| ApiError::internal(format!("failed to resolve parent directory: {error}")))?;
+    let canonical_parent = fs::canonicalize(parent).await.map_err(|error| {
+        ApiError::internal(format!("failed to resolve parent directory: {error}"))
+    })?;
     ensure_inside(root, &canonical_parent)?;
 
     let file_name = candidate
@@ -138,7 +140,10 @@ mod tests {
             sanitize_relative("project/src/main.rs").unwrap(),
             PathBuf::from("project/src/main.rs")
         );
-        assert_eq!(sanitize_relative("./project").unwrap(), PathBuf::from("project"));
+        assert_eq!(
+            sanitize_relative("./project").unwrap(),
+            PathBuf::from("project")
+        );
     }
 
     #[test]
