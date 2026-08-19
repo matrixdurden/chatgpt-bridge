@@ -142,7 +142,7 @@ if as_root test -f "$CONFIG_FILE"; then
 fi
 
 if [[ -z "$TOKEN" ]] && as_root test -f "$CONFIG_FILE"; then
-    EXISTING_TOKEN="$(as_root awk -F'"' '/^CHATGPT_BRIDGE_TOKEN="[A-Za-z0-9._~-]+"$/ { print $2; exit }' "$CONFIG_FILE")"
+    EXISTING_TOKEN="$(as_root awk -F'\"' '/^CHATGPT_BRIDGE_TOKEN=\"[A-Za-z0-9._~-]+\"$/ { print $2; exit }' "$CONFIG_FILE")"
     if [[ ${#EXISTING_TOKEN} -ge 32 ]]; then
         TOKEN="$EXISTING_TOKEN"
         TOKEN_WAS_REUSED=1
@@ -204,12 +204,15 @@ fi
 
 SERVICE_PATH_ENV="${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# Keep the unit deliberately small and portable. The main security boundary is
+# the unprivileged service user, localhost-only listener, and Bearer token.
+# More aggressive systemd sandboxing varies across systemd/WSL environments
+# and can prevent an otherwise valid unit from loading.
 cat >"$TMP_SERVICE" <<EOF
 [Unit]
 Description=ChatGPT Bridge
 Documentation=https://github.com/matrixdurden/chatgpt-bridge
-After=network-online.target
-Wants=network-online.target
+After=network.target
 
 [Service]
 Type=simple
@@ -218,25 +221,14 @@ Group=${SERVICE_GROUP}
 EnvironmentFile=${CONFIG_FILE}
 Environment=$(env_quote "HOME=${SERVICE_HOME}")
 Environment=$(env_quote "PATH=${SERVICE_PATH_ENV}")
-WorkingDirectory=$(env_quote "$SERVICE_HOME")
 ExecStart=${BINARY_PATH} serve
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=15s
 KillMode=mixed
 UMask=0077
-
 NoNewPrivileges=true
 PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=full
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-ProtectClock=true
-RestrictSUIDSGID=true
-LockPersonality=true
-RestrictRealtime=true
 
 [Install]
 WantedBy=multi-user.target
@@ -248,6 +240,14 @@ as_root install -d -m 0755 "$CONFIG_DIR"
 as_root install -m 0600 "$TMP_CONFIG" "$CONFIG_FILE"
 as_root install -m 0644 "$TMP_SERVICE" "$SERVICE_FILE"
 as_root rm -f -- "$LEGACY_UNINSTALL_PATH"
+
+# Validate the exact installed unit before reloading systemd. This turns vague
+# "bad unit file setting" failures into an installer error with useful output.
+if command -v systemd-analyze >/dev/null 2>&1; then
+    if ! as_root systemd-analyze verify "$SERVICE_FILE"; then
+        fail "systemd rejected ${SERVICE_FILE}"
+    fi
+fi
 
 as_root systemctl daemon-reload
 
