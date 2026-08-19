@@ -10,12 +10,14 @@ SERVICE_FILE="/etc/systemd/system/chatgpt-bridge.service"
 DEFAULT_BIND="127.0.0.1:8787"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-BIND="${DEFAULT_BIND}"
 SERVICE_USER="${SUDO_USER:-${USER:-}}"
 TOKEN="${CHATGPT_BRIDGE_TOKEN:-}"
 TOKEN_WAS_GENERATED=0
 TOKEN_WAS_REUSED=0
 EXISTING_ROOT_LINE=""
+EXISTING_BIND_LINE=""
+EXISTING_TLS_CERT_LINE=""
+EXISTING_TLS_KEY_LINE=""
 WAS_ACTIVE=0
 
 usage() {
@@ -28,14 +30,14 @@ Usage:
 Options:
   --service-user USER    Linux user that will run the bridge.
                          Default: the invoking non-root user.
-  --bind ADDRESS         HTTP listen address. Default: 127.0.0.1:8787
   -h, --help             Show this help.
 
-The installer only installs ChatGPT Bridge. Choose the workspace when starting:
+The installer only installs ChatGPT Bridge. Runtime settings belong to the CLI:
 
   chatgpt-bridge start --workspace "/projects"
+  chatgpt-bridge start --port 8787
 
-After that, the workspace is saved and plain `chatgpt-bridge start` is enough.
+Public mode requires HTTPS and is configured with `chatgpt-bridge start`.
 EOF
 }
 
@@ -98,11 +100,6 @@ while (($#)); do
             SERVICE_USER="$2"
             shift 2
             ;;
-        --bind)
-            [[ $# -ge 2 ]] || fail "--bind requires a value"
-            BIND="$2"
-            shift 2
-            ;;
         -h|--help)
             usage
             exit 0
@@ -138,7 +135,10 @@ if as_root systemctl is-active --quiet chatgpt-bridge.service 2>/dev/null; then
 fi
 
 if as_root test -f "$CONFIG_FILE"; then
-    EXISTING_ROOT_LINE="$(as_root sh -c "grep '^CHATGPT_BRIDGE_ROOT=' '$CONFIG_FILE' | head -n 1" || true)"
+    EXISTING_ROOT_LINE="$(as_root awk '/^CHATGPT_BRIDGE_ROOT=/ { print; exit }' "$CONFIG_FILE" || true)"
+    EXISTING_BIND_LINE="$(as_root awk '/^CHATGPT_BRIDGE_BIND=/ { print; exit }' "$CONFIG_FILE" || true)"
+    EXISTING_TLS_CERT_LINE="$(as_root awk '/^CHATGPT_BRIDGE_TLS_CERT=/ { print; exit }' "$CONFIG_FILE" || true)"
+    EXISTING_TLS_KEY_LINE="$(as_root awk '/^CHATGPT_BRIDGE_TLS_KEY=/ { print; exit }' "$CONFIG_FILE" || true)"
 fi
 
 if [[ -z "$TOKEN" ]] && as_root test -f "$CONFIG_FILE"; then
@@ -189,7 +189,6 @@ chmod 600 "$TMP_CONFIG" "$TMP_SERVICE"
 
 cat >"$TMP_CONFIG" <<EOF
 CHATGPT_BRIDGE_TOKEN=$(env_quote "$TOKEN")
-CHATGPT_BRIDGE_BIND=$(env_quote "$BIND")
 CHATGPT_BRIDGE_SERVICE_USER=$(env_quote "$SERVICE_USER")
 CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS=30000
 CHATGPT_BRIDGE_MAX_TIMEOUT_MS=300000
@@ -198,16 +197,30 @@ CHATGPT_BRIDGE_MAX_FILE_BYTES=1048576
 RUST_LOG=chatgpt_bridge=info
 EOF
 
+if [[ -n "$EXISTING_BIND_LINE" ]]; then
+    printf '%s\n' "$EXISTING_BIND_LINE" >>"$TMP_CONFIG"
+else
+    printf 'CHATGPT_BRIDGE_BIND=%s\n' "$(env_quote "$DEFAULT_BIND")" >>"$TMP_CONFIG"
+fi
+
 if [[ -n "$EXISTING_ROOT_LINE" ]]; then
     printf '%s\n' "$EXISTING_ROOT_LINE" >>"$TMP_CONFIG"
 fi
 
+if [[ -n "$EXISTING_TLS_CERT_LINE" ]]; then
+    printf '%s\n' "$EXISTING_TLS_CERT_LINE" >>"$TMP_CONFIG"
+else
+    printf 'CHATGPT_BRIDGE_TLS_CERT=""\n' >>"$TMP_CONFIG"
+fi
+
+if [[ -n "$EXISTING_TLS_KEY_LINE" ]]; then
+    printf '%s\n' "$EXISTING_TLS_KEY_LINE" >>"$TMP_CONFIG"
+else
+    printf 'CHATGPT_BRIDGE_TLS_KEY=""\n' >>"$TMP_CONFIG"
+fi
+
 SERVICE_PATH_ENV="${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-# Keep the unit deliberately small and portable. The main security boundary is
-# the unprivileged service user, localhost-only listener, and Bearer token.
-# More aggressive systemd sandboxing varies across systemd/WSL environments
-# and can prevent an otherwise valid unit from loading.
 cat >"$TMP_SERVICE" <<EOF
 [Unit]
 Description=ChatGPT Bridge
@@ -241,8 +254,6 @@ as_root install -m 0600 "$TMP_CONFIG" "$CONFIG_FILE"
 as_root install -m 0644 "$TMP_SERVICE" "$SERVICE_FILE"
 as_root rm -f -- "$LEGACY_UNINSTALL_PATH"
 
-# Validate the exact installed unit before reloading systemd. This turns vague
-# "bad unit file setting" failures into an installer error with useful output.
 if command -v systemd-analyze >/dev/null 2>&1; then
     if ! as_root systemd-analyze verify "$SERVICE_FILE"; then
         fail "systemd rejected ${SERVICE_FILE}"
@@ -259,23 +270,23 @@ cat <<EOF
 
 ChatGPT Bridge installed.
 
-Next:
+First start:
   chatgpt-bridge start --workspace "/projects"
 
-Then manage it with:
-  chatgpt-bridge start
-  chatgpt-bridge stop
-  chatgpt-bridge restart
+Useful commands:
+  chatgpt-bridge start --port 8787
   chatgpt-bridge status
   chatgpt-bridge logs
+  chatgpt-bridge key
+  chatgpt-bridge key rotate
   chatgpt-bridge uninstall
 
-Bearer token:
+Bearer key:
   ${TOKEN}
 EOF
 
 if [[ $TOKEN_WAS_GENERATED -eq 1 ]]; then
-    printf '\nA new authentication token was generated. Save it; ChatGPT will need it.\n'
+    printf '\nA new authentication key was generated. Save it; ChatGPT will need it.\n'
 elif [[ $TOKEN_WAS_REUSED -eq 1 ]]; then
-    printf '\nThe existing authentication token was preserved.\n'
+    printf '\nThe existing authentication key and runtime settings were preserved.\n'
 fi
