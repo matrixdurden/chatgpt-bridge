@@ -1,4 +1,5 @@
 mod auth;
+mod cli;
 mod config;
 mod error;
 mod routes;
@@ -9,8 +10,9 @@ use axum::{
     Router, middleware,
     routing::{get, post},
 };
+use cli::CliCommand;
 use config::Config;
-use std::sync::Arc;
+use std::{env, sync::Arc};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -22,6 +24,15 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let command = cli::parse_args(env::args().skip(1))?;
+    if command != CliCommand::Serve {
+        return cli::execute(command);
+    }
+
+    serve().await
+}
+
+async fn serve() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
