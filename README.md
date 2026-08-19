@@ -2,10 +2,10 @@
 
 A small self-hosted Rust service that lets a ChatGPT Custom GPT work on a remote Linux development workspace through HTTPS.
 
-The goal is to make web ChatGPT capable of a Codex-like loop: inspect a repository, run shell commands, read and edit files, build, test, use Git, inspect the result, and continue iterating.
+The goal is simple: use web ChatGPT in a Codex-like loop — inspect repositories, run shell commands, read and edit files, build, test, use Git, and continue iterating.
 
 > [!WARNING]
-> ChatGPT Bridge exposes powerful development operations. Shell commands run with the permissions of the Linux user configured for the service. Do not run the service as `root`, do not expose the raw HTTP port directly to the internet, and keep the Bearer token private.
+> Shell commands run with the permissions of the Linux user running the service. Do not run ChatGPT Bridge as `root`, do not expose the raw HTTP port directly to the internet, and keep the Bearer token private.
 
 ## Architecture
 
@@ -17,90 +17,25 @@ ChatGPT / Custom GPT
  reverse proxy / TLS
         |
         v
- chatgpt-bridge (Rust)
+ chatgpt-bridge
         |
-        +-- shell commands
-        +-- file read/write/list
-        +-- builds/tests/Git
+        +-- shell
+        +-- files
+        +-- Git/build/test tools
         |
         v
- Linux development workspace
+ Linux workspace
 ```
 
-The repository includes `openapi.yaml`, which describes the bridge API for a Custom GPT Action.
-
-## Current API
-
-- `GET /health` — unauthenticated liveness check.
-- `GET /v1/info` — bridge capabilities and configured limits.
-- `POST /v1/exec` — run a shell command inside the workspace.
-- `POST /v1/files/read` — read a UTF-8 text file.
-- `POST /v1/files/write` — write a UTF-8 text file.
-- `POST /v1/files/list` — list a directory.
-
-Everything under `/v1/*` requires a Bearer token.
-
-## Requirements
-
-- Linux with `systemd`
-- Rust stable toolchain (`cargo`)
-- `sudo` when installing or managing the service as a normal user
-- an existing workspace directory
-
 ## Install
-
-Clone the repository and run the installer from the repository root:
 
 ```bash
 git clone https://github.com/matrixdurden/chatgpt-bridge.git
 cd chatgpt-bridge
-./install.sh --workspace "$HOME/projects"
+./install.sh
 ```
 
-Replace `$HOME/projects` with the directory ChatGPT should work in.
-
-The installer:
-
-- builds an optimized release binary
-- installs `/usr/local/bin/chatgpt-bridge`
-- creates `/etc/chatgpt-bridge/config.env`
-- creates and enables `chatgpt-bridge.service`
-- generates a strong Bearer token on first install
-- keeps the existing token during reinstall/upgrade
-- starts the service
-
-The service runs as the user who launched the installer, not as root. If you run the installer through `sudo`, it uses `SUDO_USER` when available.
-
-### Installer options
-
-```text
-./install.sh --workspace PATH [options]
-
---workspace PATH       Existing workspace directory. Required.
---service-user USER    Linux user that runs the bridge.
---bind ADDRESS         Listen address. Default: 127.0.0.1:8787
---no-start             Install and enable without starting immediately.
--h, --help             Show help.
-```
-
-Example with an explicit service user:
-
-```bash
-./install.sh \
-  --workspace /home/developer/projects \
-  --service-user developer
-```
-
-To provide your own token instead of generating one:
-
-```bash
-CHATGPT_BRIDGE_TOKEN='replace-with-a-long-random-token' \
-  ./install.sh --workspace "$HOME/projects"
-```
-
-Custom tokens must contain at least 32 characters and may use letters, numbers, `.`, `_`, `~`, and `-`.
-
-## Installed layout
+The installer builds and installs:
 
 ```text
 /usr/local/bin/chatgpt-bridge
@@ -108,141 +43,118 @@ Custom tokens must contain at least 32 characters and may use letters, numbers, 
 /etc/systemd/system/chatgpt-bridge.service
 ```
 
-There is deliberately no separate uninstaller binary or shell script. After installation, one command manages the application: `chatgpt-bridge`.
+It also generates the Bearer token. It does **not** choose or modify a workspace.
 
-The installer does **not** create, move, chown, or own your workspace. This is deliberate: uninstalling the bridge must never delete source code or project data.
+Requirements:
 
-## Command line
+- Linux with `systemd`
+- Rust stable toolchain (`cargo`)
+- `sudo` for system installation
+
+## First start
+
+Choose the directory ChatGPT may work inside:
+
+```bash
+chatgpt-bridge start --workspace "/projects"
+```
+
+The path must already exist.
+
+The workspace is saved in `/etc/chatgpt-bridge/config.env`, so later starts are simply:
+
+```bash
+chatgpt-bridge start
+```
+
+Changing workspace is also simple:
+
+```bash
+chatgpt-bridge start --workspace "/srv/code"
+```
+
+If the service is already running, supplying `--workspace` updates the configuration and restarts it so the new workspace takes effect immediately.
+
+## Commands
 
 ```text
-chatgpt-bridge <command>
-
-start       Start the systemd service
-stop        Stop the systemd service
-restart     Restart the systemd service
-status      Show service status
-logs        Show the latest 100 service log lines
-logs -f     Follow service logs
-uninstall   Remove the installed service, config, and binary
-serve       Run the HTTP server; normally used only by systemd
-version     Show the installed version
-help        Show command help
+chatgpt-bridge start --workspace PATH   Set workspace and start
+chatgpt-bridge start                    Start with saved workspace
+chatgpt-bridge stop                     Stop
+chatgpt-bridge restart                  Restart
+chatgpt-bridge status                   Show service status
+chatgpt-bridge logs                     Show latest logs
+chatgpt-bridge logs -f                  Follow logs
+chatgpt-bridge version                  Show version
+chatgpt-bridge help                     Show help
+chatgpt-bridge uninstall                Completely remove ChatGPT Bridge
 ```
 
-Examples:
+Administrative operations request `sudo` automatically when needed.
 
-```bash
-chatgpt-bridge status
-chatgpt-bridge restart
-chatgpt-bridge logs -f
-```
+## Quick test
 
-Commands that need administrative access invoke `sudo` themselves when necessary, so normal use does not require writing `sudo systemctl ...` manually.
-
-The systemd service explicitly runs:
-
-```text
-/usr/local/bin/chatgpt-bridge serve
-```
-
-Running the binary with no arguments also starts the server for compatibility with older installations, but `serve` is the explicit server command.
-
-## Configuration
-
-View the configuration and token:
-
-```bash
-sudo cat /etc/chatgpt-bridge/config.env
-```
-
-The configuration file is installed with mode `0600`.
-
-Supported values:
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `CHATGPT_BRIDGE_TOKEN` | generated | Bearer token, minimum 32 characters. |
-| `CHATGPT_BRIDGE_ROOT` | installer value | Workspace root. |
-| `CHATGPT_BRIDGE_BIND` | `127.0.0.1:8787` | HTTP bind address. |
-| `CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS` | `30000` | Default command timeout. |
-| `CHATGPT_BRIDGE_MAX_TIMEOUT_MS` | `300000` | Maximum command timeout. |
-| `CHATGPT_BRIDGE_MAX_OUTPUT_BYTES` | `1048576` | Maximum stdout/stderr bytes returned per stream. |
-| `CHATGPT_BRIDGE_MAX_FILE_BYTES` | `1048576` | Maximum file read/write size. |
-| `RUST_LOG` | `chatgpt_bridge=info` | Rust tracing filter. |
-
-After editing the file:
-
-```bash
-chatgpt-bridge restart
-```
-
-## Local test
-
-The default listener is `127.0.0.1:8787`.
-
-Health check:
+After starting:
 
 ```bash
 curl http://127.0.0.1:8787/health
 ```
 
-For authenticated endpoints, copy the token from `/etc/chatgpt-bridge/config.env`:
+View the token/configuration:
+
+```bash
+sudo cat /etc/chatgpt-bridge/config.env
+```
+
+Authenticated API test:
 
 ```bash
 export BRIDGE_TOKEN='your-token-here'
-```
 
-Get bridge information:
-
-```bash
 curl http://127.0.0.1:8787/v1/info \
   -H "Authorization: Bearer $BRIDGE_TOKEN"
 ```
 
-Run a command:
+Run a command inside the configured workspace:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/v1/exec \
   -H "Authorization: Bearer $BRIDGE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "command": "git status --short && cargo test",
-    "cwd": "chatgpt-bridge",
-    "timeout_ms": 120000
+    "command": "pwd && ls -la",
+    "cwd": ""
   }'
 ```
 
-The `cwd` is always relative to the configured workspace root.
+`cwd` is always relative to the configured workspace root.
 
-Read a file:
+## API
 
-```bash
-curl -X POST http://127.0.0.1:8787/v1/files/read \
-  -H "Authorization: Bearer $BRIDGE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"path":"chatgpt-bridge/Cargo.toml"}'
-```
+Current endpoints:
 
-Write a file:
+- `GET /health`
+- `GET /v1/info`
+- `POST /v1/exec`
+- `POST /v1/files/read`
+- `POST /v1/files/write`
+- `POST /v1/files/list`
 
-```bash
-curl -X POST http://127.0.0.1:8787/v1/files/write \
-  -H "Authorization: Bearer $BRIDGE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "path": "chatgpt-bridge/example.txt",
-    "content": "hello\n",
-    "overwrite": true
-  }'
-```
+Everything under `/v1/*` requires Bearer authentication.
+
+The repository includes `openapi.yaml` for a Custom GPT Action.
 
 ## Expose it to ChatGPT
 
-Do not change the bridge to `0.0.0.0` and publish port `8787` directly.
+By default the service listens only on:
 
-Keep it on localhost and put a real HTTPS reverse proxy or secure tunnel in front of it.
+```text
+127.0.0.1:8787
+```
 
-A minimal Caddy example:
+Do not expose that port directly. Put HTTPS in front of it.
+
+Minimal Caddy example:
 
 ```caddyfile
 bridge.example.com {
@@ -250,118 +162,74 @@ bridge.example.com {
 }
 ```
 
-After HTTPS works externally, change the server URL near the top of `openapi.yaml`:
+Then change the server URL in `openapi.yaml`:
 
 ```yaml
 servers:
   - url: https://bridge.example.com
 ```
 
-Then configure the Custom GPT Action:
+In the GPT Action configuration:
 
-1. Open the GPT editor.
-2. Go to **Actions** and create a new action.
-3. Use API-key authentication with Bearer authentication.
-4. Enter the token generated by `install.sh`.
-5. Paste or import `openapi.yaml`.
-6. Test `healthCheck`, `getBridgeInfo`, and a harmless command.
+1. Import/paste `openapi.yaml`.
+2. Configure API-key authentication using Bearer auth.
+3. Enter the token generated during installation.
+4. Test `healthCheck`, `getBridgeInfo`, and a harmless shell command.
 
-Once connected, a request such as this becomes possible:
+## Configuration
+
+Configuration lives at:
 
 ```text
-Inspect the project in matrixcode, run the tests, find the failure, fix it,
-run the tests again, show me the diff, then commit the change.
+/etc/chatgpt-bridge/config.env
 ```
 
-The GPT can use the bridge endpoints repeatedly to perform that workflow.
+Main values:
 
-## Workspace and permissions
-
-The selected service user must already be able to read, write, and enter the workspace directory. The installer refuses to change workspace ownership automatically.
-
-For example, if your normal account already owns `/home/me/projects`, the simplest setup is:
-
-```bash
-./install.sh --workspace /home/me/projects
-```
-
-This also means commands executed by the bridge can use that user's installed tools and Git/SSH configuration.
-
-Important: the workspace root constrains the dedicated file endpoints and command working directory, but the shell itself is not a complete sandbox. A shell command still has the operating-system permissions of the service user. For stronger isolation, use a dedicated Linux user, container, or VM.
+| Variable | Description |
+| --- | --- |
+| `CHATGPT_BRIDGE_TOKEN` | Bearer token. |
+| `CHATGPT_BRIDGE_ROOT` | Saved workspace. Added by `start --workspace`. |
+| `CHATGPT_BRIDGE_BIND` | HTTP bind address. Default `127.0.0.1:8787`. |
+| `CHATGPT_BRIDGE_SERVICE_USER` | Linux user running the systemd service. |
+| `CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS` | Default command timeout. |
+| `CHATGPT_BRIDGE_MAX_TIMEOUT_MS` | Maximum command timeout. |
+| `CHATGPT_BRIDGE_MAX_OUTPUT_BYTES` | Maximum stdout/stderr returned. |
+| `CHATGPT_BRIDGE_MAX_FILE_BYTES` | Maximum file read/write size. |
 
 ## Upgrade
 
-Pull the new code and run the installer again with the same workspace:
-
 ```bash
+cd chatgpt-bridge
 git pull
-./install.sh --workspace "$HOME/projects"
+./install.sh
 ```
 
-The binary and service definition are replaced cleanly. Unless you explicitly set `CHATGPT_BRIDGE_TOKEN`, the existing token is retained so the GPT Action does not need to be reconfigured.
-
-Upgrading from the older standalone-uninstaller layout automatically removes `/usr/local/bin/chatgpt-bridge-uninstall`.
+The existing token and saved workspace are preserved. If the service was running, the installer restarts it with the updated binary.
 
 ## Uninstall
-
-Use the same binary:
 
 ```bash
 chatgpt-bridge uninstall
 ```
 
-It stops and disables the service, then removes:
+This removes the binary, configuration, systemd service, enablement, and legacy installation files.
 
-```text
-/usr/local/bin/chatgpt-bridge
-/etc/chatgpt-bridge/
-/etc/systemd/system/chatgpt-bridge.service
-```
-
-It also removes the legacy `/usr/local/bin/chatgpt-bridge-uninstall` path if an older installation left it behind, reloads systemd, and clears the failed-service state.
-
-The workspace, repositories, Linux user, Git keys, and source checkout are intentionally untouched. They are user data, not ChatGPT Bridge installation files.
-
-## Manual build
-
-If you do not want the installer:
-
-```bash
-cargo build --release
-```
-
-The binary is produced at:
-
-```text
-target/release/chatgpt-bridge
-```
-
-Minimum runtime configuration:
-
-```bash
-export CHATGPT_BRIDGE_TOKEN="$(openssl rand -hex 32)"
-export CHATGPT_BRIDGE_ROOT="$HOME/projects"
-export CHATGPT_BRIDGE_BIND="127.0.0.1:8787"
-./target/release/chatgpt-bridge serve
-```
+It deliberately does **not** remove the configured workspace, repositories, Linux user, Git keys, or source checkout.
 
 ## Security model
 
 - Bearer authentication is mandatory for `/v1/*`.
-- The default listener is localhost only.
-- File APIs reject absolute paths and `..` traversal.
-- File APIs reject symlink escapes outside the configured workspace.
+- Listener defaults to localhost only.
+- File APIs reject absolute paths, `..` traversal, and symlink escapes.
 - Command working directories must resolve inside the workspace.
-- Command execution has configurable timeouts.
-- Command and file output sizes are capped.
-- The systemd service uses `NoNewPrivileges` and additional hardening directives.
-- The service is forbidden from running as root by the installer.
+- Command execution and output sizes are limited.
+- The systemd service uses `NoNewPrivileges` and additional hardening.
+- The installer refuses to run the service as `root`.
 
-This still does not turn arbitrary shell execution into a perfect sandbox. Treat the service account as part of the security boundary.
+The shell itself is not a perfect sandbox. It still has the operating-system permissions of the configured service user.
 
 ## Development
-
-Run the same checks used by CI:
 
 ```bash
 bash -n install.sh
@@ -369,10 +237,6 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
-
-## Project status
-
-Early development. The API and security model may evolve as process/session management, structured Git operations, patching, audit logging, and stronger isolation are added.
 
 ## Disclaimer
 
