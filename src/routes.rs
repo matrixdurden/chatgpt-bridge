@@ -102,24 +102,20 @@ pub async fn exec(
         .current_dir(&cwd)
         .kill_on_drop(true);
 
-    let output = match time::timeout(
-        time::Duration::from_millis(timeout_ms),
-        command.output(),
-    )
-    .await
-    {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            return Err(ApiError::internal(format!(
-                "failed to execute command: {error}"
-            )));
-        }
-        Err(_) => {
-            return Err(ApiError::timeout(format!(
-                "command exceeded timeout of {timeout_ms} ms"
-            )));
-        }
-    };
+    let output =
+        match time::timeout(time::Duration::from_millis(timeout_ms), command.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                return Err(ApiError::internal(format!(
+                    "failed to execute command: {error}"
+                )));
+            }
+            Err(_) => {
+                return Err(ApiError::timeout(format!(
+                    "command exceeded timeout of {timeout_ms} ms"
+                )));
+            }
+        };
 
     let (stdout, stdout_truncated) = truncate_output(&output.stdout, state.config.max_output_bytes);
     let (stderr, stderr_truncated) = truncate_output(&output.stderr, state.config.max_output_bytes);
@@ -216,12 +212,9 @@ pub async fn write_file(
         )));
     }
 
-    let target = workspace::resolve_write_target(
-        &state.config.root,
-        &request.path,
-        request.create_parents,
-    )
-    .await?;
+    let target =
+        workspace::resolve_write_target(&state.config.root, &request.path, request.create_parents)
+            .await?;
 
     let existed = match fs::symlink_metadata(&target).await {
         Ok(metadata) => {
@@ -314,10 +307,9 @@ pub async fn list_files(
             break;
         }
 
-        let file_type = entry
-            .file_type()
-            .await
-            .map_err(|error| ApiError::internal(format!("failed to inspect directory entry: {error}")))?;
+        let file_type = entry.file_type().await.map_err(|error| {
+            ApiError::internal(format!("failed to inspect directory entry: {error}"))
+        })?;
 
         let (kind, size) = if file_type.is_file() {
             let size = entry.metadata().await.ok().map(|metadata| metadata.len());
