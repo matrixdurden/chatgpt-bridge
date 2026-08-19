@@ -10,11 +10,12 @@ use axum::{
     Router, middleware,
     routing::{get, post},
 };
+use axum_server::tls_rustls::RustlsConfig;
 use cli::CliCommand;
 use config::Config;
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Clone)]
@@ -46,13 +47,6 @@ async fn serve() -> Result<()> {
         config: Arc::clone(&config),
     };
 
-    if !bind.ip().is_loopback() {
-        warn!(
-            %bind,
-            "bridge is listening on a non-loopback address; use a firewall and TLS reverse proxy"
-        );
-    }
-
     let protected = Router::new()
         .route("/v1/info", get(routes::info))
         .route("/v1/exec", post(routes::exec))
@@ -69,14 +63,29 @@ async fn serve() -> Result<()> {
         .merge(protected)
         .with_state(state);
 
-    let listener = TcpListener::bind(bind).await?;
-    info!(
-        %bind,
-        workspace = %config.root.display(),
-        version = env!("CARGO_PKG_VERSION"),
-        "chatgpt-bridge started"
-    );
+    if let Some(tls) = &config.tls {
+        let tls_config = RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
+        info!(
+            %bind,
+            workspace = %config.root.display(),
+            version = env!("CARGO_PKG_VERSION"),
+            "chatgpt-bridge HTTPS server started"
+        );
 
-    axum::serve(listener, app).await?;
+        axum_server::bind_rustls(bind, tls_config)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let listener = TcpListener::bind(bind).await?;
+        info!(
+            %bind,
+            workspace = %config.root.display(),
+            version = env!("CARGO_PKG_VERSION"),
+            "chatgpt-bridge HTTP server started"
+        );
+
+        axum::serve(listener, app).await?;
+    }
+
     Ok(())
 }
