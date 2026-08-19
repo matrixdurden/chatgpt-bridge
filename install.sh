@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 APP_NAME="chatgpt-bridge"
 BINARY_PATH="/usr/local/bin/chatgpt-bridge"
-UNINSTALL_PATH="/usr/local/bin/chatgpt-bridge-uninstall"
+LEGACY_UNINSTALL_PATH="/usr/local/bin/chatgpt-bridge-uninstall"
 CONFIG_DIR="/etc/chatgpt-bridge"
 CONFIG_FILE="${CONFIG_DIR}/config.env"
 SERVICE_FILE="/etc/systemd/system/chatgpt-bridge.service"
@@ -195,7 +195,6 @@ fi
 [[ "$TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "CHATGPT_BRIDGE_TOKEN may contain only A-Z, a-z, 0-9, '.', '_', '~', and '-'"
 
 [[ -f "${SCRIPT_DIR}/Cargo.toml" ]] || fail "run install.sh from the ChatGPT Bridge source checkout"
-[[ -f "${SCRIPT_DIR}/uninstall.sh" ]] || fail "uninstall.sh is missing from the source checkout"
 
 BUILD_USER="$(id -un)"
 if [[ ${EUID} -eq 0 ]]; then
@@ -254,7 +253,7 @@ EnvironmentFile=${CONFIG_FILE}
 Environment=$(unit_quote "HOME=${SERVICE_HOME}")
 Environment=$(unit_quote "PATH=${SERVICE_PATH_ENV}")
 WorkingDirectory=$(unit_quote "$WORKSPACE")
-ExecStart=${BINARY_PATH}
+ExecStart=${BINARY_PATH} serve
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=15s
@@ -282,10 +281,11 @@ EOF
 
 printf 'Installing system files...\n'
 as_root install -m 0755 "$BUILT_BINARY" "$BINARY_PATH"
-as_root install -m 0755 "${SCRIPT_DIR}/uninstall.sh" "$UNINSTALL_PATH"
 as_root install -d -m 0755 "$CONFIG_DIR"
 as_root install -m 0600 "$TMP_CONFIG" "$CONFIG_FILE"
 as_root install -m 0644 "$TMP_SERVICE" "$SERVICE_FILE"
+# Remove the standalone uninstaller left by versions before the single CLI.
+as_root rm -f -- "$LEGACY_UNINSTALL_PATH"
 
 as_root systemctl daemon-reload
 as_root systemctl enable chatgpt-bridge.service >/dev/null
@@ -294,7 +294,7 @@ if [[ $START_SERVICE -eq 1 ]]; then
     as_root systemctl restart chatgpt-bridge.service
     if ! as_root systemctl is-active --quiet chatgpt-bridge.service; then
         as_root systemctl --no-pager --full status chatgpt-bridge.service || true
-        fail "service failed to start; inspect: journalctl -u chatgpt-bridge -n 100 --no-pager"
+        fail "service failed to start; inspect: chatgpt-bridge logs"
     fi
 fi
 
@@ -313,11 +313,14 @@ Bearer token:
   ${TOKEN}
 
 Useful commands:
-  sudo systemctl status chatgpt-bridge
-  sudo journalctl -u chatgpt-bridge -f
-  sudo systemctl restart chatgpt-bridge
+  chatgpt-bridge status
+  chatgpt-bridge start
+  chatgpt-bridge stop
+  chatgpt-bridge restart
+  chatgpt-bridge logs
+  chatgpt-bridge logs -f
+  chatgpt-bridge uninstall
   curl http://${BIND}/health
-  sudo ${UNINSTALL_PATH}
 
 Keep the token private. The Rust service is intentionally bound to localhost by
 default; put it behind HTTPS before connecting it to a Custom GPT.
