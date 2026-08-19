@@ -162,7 +162,9 @@ fn ensure_workspace_configured() -> Result<()> {
     });
 
     if !configured {
-        bail!("workspace is not configured; run `chatgpt-bridge start --workspace /path/to/projects`");
+        bail!(
+            "workspace is not configured; run `chatgpt-bridge start --workspace /path/to/projects`"
+        );
     }
 
     Ok(())
