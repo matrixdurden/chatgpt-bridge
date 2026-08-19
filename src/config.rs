@@ -8,10 +8,17 @@ const DEFAULT_MAX_OUTPUT_BYTES: usize = 1_048_576;
 const DEFAULT_MAX_FILE_BYTES: usize = 1_048_576;
 
 #[derive(Debug, Clone)]
+pub struct TlsConfig {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
     pub token: String,
     pub root: PathBuf,
+    pub tls: Option<TlsConfig>,
     pub default_timeout_ms: u64,
     pub max_timeout_ms: u64,
     pub max_output_bytes: usize,
@@ -38,6 +45,34 @@ impl Config {
             .parse::<SocketAddr>()
             .with_context(|| format!("invalid CHATGPT_BRIDGE_BIND={bind_raw:?}"))?;
 
+        let tls = match (
+            optional("CHATGPT_BRIDGE_TLS_CERT"),
+            optional("CHATGPT_BRIDGE_TLS_KEY"),
+        ) {
+            (None, None) => None,
+            (Some(cert), Some(key)) => {
+                let cert = PathBuf::from(&cert)
+                    .canonicalize()
+                    .with_context(|| format!("failed to resolve CHATGPT_BRIDGE_TLS_CERT={cert:?}"))?;
+                let key = PathBuf::from(&key)
+                    .canonicalize()
+                    .with_context(|| format!("failed to resolve CHATGPT_BRIDGE_TLS_KEY={key:?}"))?;
+
+                if !cert.is_file() || !key.is_file() {
+                    bail!("TLS certificate and private key must both be regular files");
+                }
+
+                Some(TlsConfig { cert, key })
+            }
+            _ => bail!("CHATGPT_BRIDGE_TLS_CERT and CHATGPT_BRIDGE_TLS_KEY must be configured together"),
+        };
+
+        if !bind.ip().is_loopback() && tls.is_none() {
+            bail!(
+                "refusing to listen on a public interface without TLS; configure a certificate and key first"
+            );
+        }
+
         let default_timeout_ms =
             parse_u64("CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)?;
         let max_timeout_ms = parse_u64("CHATGPT_BRIDGE_MAX_TIMEOUT_MS", MAX_TIMEOUT_MS)?;
@@ -59,6 +94,7 @@ impl Config {
             bind,
             token,
             root,
+            tls,
             default_timeout_ms,
             max_timeout_ms,
             max_output_bytes,
@@ -72,6 +108,13 @@ fn required(name: &str) -> Result<String> {
         Ok(value) if !value.trim().is_empty() => Ok(value),
         _ => bail!("{name} is required"),
     }
+}
+
+fn optional(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_u64(name: &str, default: u64) -> Result<u64> {
