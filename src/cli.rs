@@ -261,7 +261,11 @@ fn start(options: &StartOptions) -> Result<()> {
         elevated_checked("systemctl", ["start", SERVICE])?;
     }
 
-    let scheme = if config.tls_configured() { "https" } else { "http" };
+    let scheme = if config.tls_configured() {
+        "https"
+    } else {
+        "http"
+    };
     let visibility = if bind.ip().is_loopback() {
         "local"
     } else {
@@ -419,9 +423,7 @@ fn ensure_workspace_configured_in(config: &ConfigText) -> Result<()> {
         return Ok(());
     }
 
-    bail!(
-        "workspace is not configured; run `chatgpt-bridge start --workspace /path/to/projects`"
-    )
+    bail!("workspace is not configured; run `chatgpt-bridge start --workspace /path/to/projects`")
 }
 
 #[derive(Debug)]
