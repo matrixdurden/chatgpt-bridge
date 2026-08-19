@@ -5,7 +5,6 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     os::unix::fs::OpenOptionsExt,
-    path::Path,
     process::{Command, ExitStatus, Output},
 };
 
@@ -124,7 +123,7 @@ fn start(workspace: Option<&str>) -> Result<()> {
 }
 
 fn set_workspace(workspace: &str) -> Result<()> {
-    if workspace.contains(['\n', '\r']) {
+    if workspace.contains('\n') || workspace.contains('\r') {
         bail!("workspace path cannot contain newlines");
     }
 
@@ -141,7 +140,8 @@ fn set_workspace(workspace: &str) -> Result<()> {
     let root_line = format!("CHATGPT_BRIDGE_ROOT={}", env_quote(workspace));
 
     if let Some(line) = config
-        .lines_mut()
+        .lines
+        .iter_mut()
         .find(|line| line.starts_with("CHATGPT_BRIDGE_ROOT="))
     {
         *line = root_line;
@@ -208,7 +208,12 @@ fn write_config(content: &str) -> Result<()> {
 
         elevated_checked(
             "install",
-            [OsStr::new("-m"), OsStr::new("0600"), temp_path.as_os_str(), OsStr::new(CONFIG_FILE)],
+            [
+                OsStr::new("-m"),
+                OsStr::new("0600"),
+                temp_path.as_os_str(),
+                OsStr::new(CONFIG_FILE),
+            ],
         )
     })();
 
