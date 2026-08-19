@@ -72,10 +72,7 @@ pub fn execute(command: CliCommand) -> Result<()> {
         CliCommand::Start => elevated_checked("systemctl", ["start", SERVICE]),
         CliCommand::Stop => elevated_checked("systemctl", ["stop", SERVICE]),
         CliCommand::Restart => elevated_checked("systemctl", ["restart", SERVICE]),
-        CliCommand::Status => checked(
-            "systemctl",
-            ["--no-pager", "--full", "status", SERVICE],
-        ),
+        CliCommand::Status => checked("systemctl", ["--no-pager", "--full", "status", SERVICE]),
         CliCommand::Logs { follow } => {
             if follow {
                 elevated_checked("journalctl", ["-u", SERVICE, "-f"])
