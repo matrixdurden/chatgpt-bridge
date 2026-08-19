@@ -51,9 +51,9 @@ impl Config {
         ) {
             (None, None) => None,
             (Some(cert), Some(key)) => {
-                let cert = PathBuf::from(&cert)
-                    .canonicalize()
-                    .with_context(|| format!("failed to resolve CHATGPT_BRIDGE_TLS_CERT={cert:?}"))?;
+                let cert = PathBuf::from(&cert).canonicalize().with_context(|| {
+                    format!("failed to resolve CHATGPT_BRIDGE_TLS_CERT={cert:?}")
+                })?;
                 let key = PathBuf::from(&key)
                     .canonicalize()
                     .with_context(|| format!("failed to resolve CHATGPT_BRIDGE_TLS_KEY={key:?}"))?;
@@ -64,7 +64,9 @@ impl Config {
 
                 Some(TlsConfig { cert, key })
             }
-            _ => bail!("CHATGPT_BRIDGE_TLS_CERT and CHATGPT_BRIDGE_TLS_KEY must be configured together"),
+            _ => bail!(
+                "CHATGPT_BRIDGE_TLS_CERT and CHATGPT_BRIDGE_TLS_KEY must be configured together"
+            ),
         };
 
         if !bind.ip().is_loopback() && tls.is_none() {
