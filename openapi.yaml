@@ -1,0 +1,252 @@
+openapi: 3.1.0
+info:
+  title: ChatGPT Bridge API
+  version: 0.1.0
+  description: >-
+    Controlled access to a Linux development workspace. Paths are always relative
+    to the configured workspace root. Shell commands run with the permissions of
+    the operating-system user running chatgpt-bridge.
+servers:
+  - url: https://bridge.example.com
+    description: Replace with your public HTTPS bridge URL.
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+          required: [code, message]
+      required: [error]
+    ExecRequest:
+      type: object
+      properties:
+        command:
+          type: string
+          description: Shell command executed with /bin/sh -lc.
+        cwd:
+          type: string
+          description: Workspace-relative working directory. Empty or omitted means workspace root.
+        timeout_ms:
+          type: integer
+          minimum: 1
+          description: Optional timeout in milliseconds. Must not exceed the server maximum.
+      required: [command]
+    ExecResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        exit_code:
+          type: [integer, "null"]
+        stdout:
+          type: string
+        stderr:
+          type: string
+        stdout_truncated:
+          type: boolean
+        stderr_truncated:
+          type: boolean
+        duration_ms:
+          type: integer
+      required:
+        - success
+        - exit_code
+        - stdout
+        - stderr
+        - stdout_truncated
+        - stderr_truncated
+        - duration_ms
+    ReadFileRequest:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Workspace-relative UTF-8 text file path.
+      required: [path]
+    WriteFileRequest:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Workspace-relative UTF-8 text file path.
+        content:
+          type: string
+        create_parents:
+          type: boolean
+          default: false
+        overwrite:
+          type: boolean
+          default: false
+      required: [path, content]
+    ListFilesRequest:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Workspace-relative directory path. Empty or omitted means workspace root.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 200
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Check whether the bridge is running.
+      security: []
+      responses:
+        "200":
+          description: Bridge is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+  /v1/info:
+    get:
+      operationId: getBridgeInfo
+      summary: Get workspace and capability information.
+      responses:
+        "200":
+          description: Bridge information.
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/exec:
+    post:
+      operationId: executeCommand
+      summary: Run a shell command in the development workspace.
+      description: >-
+        Use this for builds, tests, Git commands, searches, and other terminal work.
+        The cwd must be relative to the configured workspace root.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecRequest"
+      responses:
+        "200":
+          description: Command completed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResponse"
+        "400":
+          description: Invalid command request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "408":
+          description: Command timed out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/files/read:
+    post:
+      operationId: readWorkspaceFile
+      summary: Read a UTF-8 text file from the workspace.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReadFileRequest"
+      responses:
+        "200":
+          description: File contents.
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: File not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/files/write:
+    post:
+      operationId: writeWorkspaceFile
+      summary: Create or replace a UTF-8 text file in the workspace.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WriteFileRequest"
+      responses:
+        "200":
+          description: File was written.
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: File exists and overwrite was not enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/files/list:
+    post:
+      operationId: listWorkspaceDirectory
+      summary: List a directory in the workspace.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ListFilesRequest"
+      responses:
+        "200":
+          description: Directory listing.
+          content:
+            application/json:
+              schema:
+                type: object
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
