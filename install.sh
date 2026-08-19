@@ -16,6 +16,7 @@ SERVICE_USER="${SUDO_USER:-${USER:-}}"
 START_SERVICE=1
 TOKEN="${CHATGPT_BRIDGE_TOKEN:-}"
 TOKEN_WAS_GENERATED=0
+TOKEN_WAS_REUSED=0
 
 usage() {
     cat <<'EOF'
@@ -35,7 +36,8 @@ Options:
   -h, --help             Show this help.
 
 Authentication:
-  A 64-character random token is generated automatically. To provide your own,
+  A 64-character random token is generated automatically on first install.
+  Reinstalling preserves the existing generated token. To provide your own,
   set CHATGPT_BRIDGE_TOKEN in the environment before running the installer.
 
 Examples:
@@ -43,8 +45,8 @@ Examples:
   ./install.sh --workspace /srv/projects --service-user developer
   CHATGPT_BRIDGE_TOKEN='your-long-random-token' ./install.sh --workspace "$HOME/projects"
 
-Do not run the bridge as root. The installer uses sudo only for system files and
-systemd; the service itself runs as --service-user.
+Do not run the bridge service as root. The installer uses sudo only for system
+files and systemd; the service itself runs as --service-user.
 EOF
 }
 
@@ -137,15 +139,18 @@ done
 
 [[ -n "$WORKSPACE" ]] || fail "--workspace is required"
 [[ -n "$SERVICE_USER" ]] || fail "could not determine service user; pass --service-user USER"
-[[ "$SERVICE_USER" != "root" ]] || fail "refusing to run the bridge as root"
+[[ "$SERVICE_USER" != "root" ]] || fail "refusing to run the bridge service as root"
 
+need awk
 need getent
 need id
+need install
 need realpath
 need systemctl
 if [[ ${EUID} -ne 0 ]]; then
     need sudo
 fi
+[[ -d /run/systemd/system ]] || fail "systemd is not running on this machine"
 
 id "$SERVICE_USER" >/dev/null 2>&1 || fail "Linux user does not exist: $SERVICE_USER"
 
@@ -159,6 +164,7 @@ esac
 SERVICE_HOME="$(getent passwd "$SERVICE_USER" | awk -F: '{print $6}')"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER")"
 [[ -n "$SERVICE_HOME" ]] || fail "could not determine home directory for $SERVICE_USER"
+[[ -d "$SERVICE_HOME" ]] || fail "service user home directory does not exist: $SERVICE_HOME"
 
 if ! as_user "$SERVICE_USER" test -r "$WORKSPACE"; then
     fail "$SERVICE_USER cannot read workspace: $WORKSPACE"
@@ -170,21 +176,34 @@ if ! as_user "$SERVICE_USER" test -x "$WORKSPACE"; then
     fail "$SERVICE_USER cannot enter workspace: $WORKSPACE"
 fi
 
+# Reinstall/upgrade should not silently invalidate the token already configured
+# in the GPT. Custom tokens are deliberately restricted to a shell-safe,
+# header-safe alphabet so the systemd EnvironmentFile stays simple.
+if [[ -z "$TOKEN" ]] && as_root test -f "$CONFIG_FILE"; then
+    EXISTING_TOKEN="$(as_root awk -F'"' '/^CHATGPT_BRIDGE_TOKEN="[A-Za-z0-9._~-]+"$/ { print $2; exit }' "$CONFIG_FILE")"
+    if [[ ${#EXISTING_TOKEN} -ge 32 ]]; then
+        TOKEN="$EXISTING_TOKEN"
+        TOKEN_WAS_REUSED=1
+    fi
+fi
+
 if [[ -z "$TOKEN" ]]; then
     TOKEN="$(generate_token)"
     TOKEN_WAS_GENERATED=1
 fi
 [[ ${#TOKEN} -ge 32 ]] || fail "CHATGPT_BRIDGE_TOKEN must contain at least 32 characters"
-case "$TOKEN" in
-    *$'\n'*|*$'\r'*) fail "CHATGPT_BRIDGE_TOKEN cannot contain newlines" ;;
-esac
+[[ "$TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "CHATGPT_BRIDGE_TOKEN may contain only A-Z, a-z, 0-9, '.', '_', '~', and '-'"
 
 [[ -f "${SCRIPT_DIR}/Cargo.toml" ]] || fail "run install.sh from the ChatGPT Bridge source checkout"
 [[ -f "${SCRIPT_DIR}/uninstall.sh" ]] || fail "uninstall.sh is missing from the source checkout"
 
 BUILD_USER="$(id -un)"
-if [[ ${EUID} -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-    BUILD_USER="$SUDO_USER"
+if [[ ${EUID} -eq 0 ]]; then
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        BUILD_USER="$SUDO_USER"
+    else
+        BUILD_USER="$SERVICE_USER"
+    fi
 fi
 BUILD_HOME="$(getent passwd "$BUILD_USER" | awk -F: '{print $6}')"
 BUILD_PATH="${BUILD_HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -232,8 +251,8 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_GROUP}
 EnvironmentFile=${CONFIG_FILE}
-Environment="HOME=${SERVICE_HOME}"
-Environment="PATH=${SERVICE_PATH_ENV}"
+Environment=$(unit_quote "HOME=${SERVICE_HOME}")
+Environment=$(unit_quote "PATH=${SERVICE_PATH_ENV}")
 WorkingDirectory=$(unit_quote "$WORKSPACE")
 ExecStart=${BINARY_PATH}
 Restart=on-failure
@@ -242,7 +261,8 @@ TimeoutStopSec=15s
 KillMode=mixed
 UMask=0077
 
-# Conservative systemd hardening that still permits normal development tools.
+# Conservative hardening that keeps normal compilers, package managers, Git,
+# SSH, and other development tooling usable for the selected service user.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -300,9 +320,11 @@ Useful commands:
   sudo ${UNINSTALL_PATH}
 
 Keep the token private. The Rust service is intentionally bound to localhost by
- default; put it behind HTTPS before connecting it to a Custom GPT.
+default; put it behind HTTPS before connecting it to a Custom GPT.
 EOF
 
 if [[ $TOKEN_WAS_GENERATED -eq 1 ]]; then
     printf '\nA new authentication token was generated. Save it now; ChatGPT will need it.\n'
+elif [[ $TOKEN_WAS_REUSED -eq 1 ]]; then
+    printf '\nThe existing authentication token was preserved.\n'
 fi
