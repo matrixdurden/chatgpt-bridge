@@ -14,7 +14,11 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn unauthorized() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or invalid bearer token")
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "missing or invalid bearer token",
+        )
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
