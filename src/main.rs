@@ -6,8 +6,7 @@ mod workspace;
 
 use anyhow::Result;
 use axum::{
-    Router,
-    middleware,
+    Router, middleware,
     routing::{get, post},
 };
 use config::Config;
