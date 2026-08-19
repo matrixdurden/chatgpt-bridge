@@ -24,7 +24,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Shell syntax
-        run: bash -n install.sh uninstall.sh
+        run: bash -n install.sh
 
       - name: Format
         run: cargo fmt --all -- --check
