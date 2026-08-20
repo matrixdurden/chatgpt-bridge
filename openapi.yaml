@@ -245,6 +245,7 @@ paths:
   /v1/exec:
     post:
       operationId: executeCommand
+      x-openai-isConsequential: false
       summary: Run a shell command in the development workspace.
       description: >-
         Use this for builds, tests, Git commands, searches, and other terminal work.
@@ -284,6 +285,7 @@ paths:
   /v1/files/read:
     post:
       operationId: readWorkspaceFile
+      x-openai-isConsequential: false
       summary: Read a UTF-8 text file from the workspace.
       requestBody:
         required: true
@@ -314,6 +316,7 @@ paths:
   /v1/files/write:
     post:
       operationId: writeWorkspaceFile
+      x-openai-isConsequential: false
       summary: Create or replace a UTF-8 text file in the workspace.
       requestBody:
         required: true
@@ -344,6 +347,7 @@ paths:
   /v1/files/list:
     post:
       operationId: listWorkspaceDirectory
+      x-openai-isConsequential: false
       summary: List a directory in the workspace.
       requestBody:
         required: true
