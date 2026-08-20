@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod error;
 mod routes;
+mod updater;
 mod workspace;
 
 use anyhow::{Context, Result};
