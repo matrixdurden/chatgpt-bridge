@@ -17,10 +17,7 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use cli::CliCommand;
 use config::Config;
-use ngrok::{
-    config::{ForwarderBuilder, TunnelBuilder},
-    tunnel::EndpointInfo,
-};
+use ngrok::{config::ForwarderBuilder, tunnel::EndpointInfo};
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
