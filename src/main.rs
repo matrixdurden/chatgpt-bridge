@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod error;
 mod routes;
+mod updater;
 mod workspace;
 
 use anyhow::{Context, Result};
@@ -33,7 +34,17 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let command = cli::parse_args(env::args().skip(1))?;
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "update") {
+        return updater::run_args(&args[1..]);
+    }
+
+    let command = cli::parse_args(args)?;
+    if command == CliCommand::Help {
+        cli::execute(command)?;
+        updater::print_main_help_extension();
+        return Ok(());
+    }
     if command != CliCommand::Serve {
         return cli::execute(command);
     }

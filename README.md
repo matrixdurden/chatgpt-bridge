@@ -9,13 +9,30 @@ It provides a Codex-like loop from web ChatGPT: inspect repositories, run shell 
 
 ## Install
 
+Recommended one-line install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matrixdurden/chatgpt-bridge/main/install.sh | bash
+```
+
+The installer detects `x86_64` or `arm64`, downloads the matching prebuilt GitHub Release binary, verifies it against the published SHA-256 checksum, installs the systemd service, and generates the Bearer key.
+
+The target machine does **not** need Rust, Cargo, Git, ngrok, Nginx, a TLS certificate, or router port forwarding for the normal setup.
+
+Install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/matrixdurden/chatgpt-bridge/main/install.sh \
+  | bash -s -- --version 0.2.0
+```
+
+For development from a source checkout:
+
 ```bash
 git clone https://github.com/matrixdurden/chatgpt-bridge.git
 cd chatgpt-bridge
-./install.sh
+./install.sh --from-source
 ```
-
-No ngrok binary, Nginx, TLS certificate, or router configuration is needed for the normal public setup.
 
 ## Easy public start
 
@@ -45,6 +62,28 @@ The workspace, port, public-mode setting, ngrok token, and Bearer key are saved.
 ```bash
 chatgpt-bridge start
 ```
+
+## Updates
+
+Check for a new release:
+
+```bash
+chatgpt-bridge update --check
+```
+
+Install the latest release:
+
+```bash
+chatgpt-bridge update
+```
+
+Install or roll back to a specific release:
+
+```bash
+chatgpt-bridge update --version 0.2.0
+```
+
+The updater downloads the architecture-specific GitHub Release archive, verifies `SHA256SUMS`, verifies the downloaded binary reports the expected version, replaces `/usr/local/bin/chatgpt-bridge`, and restarts the service if it was already active. Existing workspace, Bearer key, ngrok token, and runtime configuration are preserved.
 
 ## Local-only mode
 
@@ -76,6 +115,10 @@ chatgpt-bridge logs                      Show latest logs
 chatgpt-bridge logs -f                   Follow logs
 chatgpt-bridge key                       Show Bearer key
 chatgpt-bridge key rotate                Generate a new Bearer key
+chatgpt-bridge update                    Install latest GitHub Release
+chatgpt-bridge update --check            Check whether an update exists
+chatgpt-bridge update --version VERSION  Install/roll back to a release
+chatgpt-bridge version                   Show installed version
 chatgpt-bridge uninstall                 Completely remove ChatGPT Bridge
 ```
 
@@ -133,7 +176,7 @@ Everything under `/v1/*` requires `Authorization: Bearer <key>`.
 
 ## Advanced direct HTTPS mode
 
-If you explicitly want to expose the bridge without ngrok, the previous direct HTTPS mode remains available:
+If you explicitly want to expose the bridge without ngrok, direct HTTPS mode remains available:
 
 ```bash
 chatgpt-bridge start \
@@ -175,15 +218,17 @@ Main environment values:
 | `CHATGPT_BRIDGE_MAX_OUTPUT_BYTES` | Maximum stdout/stderr returned. |
 | `CHATGPT_BRIDGE_MAX_FILE_BYTES` | Maximum file read/write size. |
 
-## Upgrade
+## Releases
 
-```bash
-cd chatgpt-bridge
-git pull
-./install.sh
+`Cargo.toml` is the version source of truth. When a commit reaches `main` with a version whose `vVERSION` tag does not already exist, the Release workflow builds:
+
+```text
+chatgpt-bridge-x86_64-unknown-linux-gnu.tar.gz
+chatgpt-bridge-aarch64-unknown-linux-gnu.tar.gz
+SHA256SUMS
 ```
 
-The installer preserves the Bearer key, workspace, bind settings, ngrok configuration, and direct TLS settings.
+After both builds succeed, the workflow creates the matching Git tag and GitHub Release. Bumping the package version is therefore enough to publish the next release.
 
 ## Uninstall
 
@@ -195,6 +240,7 @@ This removes the installed binary, configuration, managed TLS copies, systemd se
 
 ## Security model
 
+- Release binaries are verified against a SHA-256 checksum downloaded from the same GitHub Release.
 - Automatic public mode keeps the bridge itself on localhost and exposes it through ngrok HTTPS.
 - Bearer authentication is mandatory for `/v1/*`.
 - Bearer keys are 256-bit random values and compared in constant time.
