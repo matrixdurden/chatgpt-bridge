@@ -144,7 +144,7 @@ resolve_latest_tag() {
 }
 
 download_release() {
-    local target tag asset base archive sums expected actual name
+    local target tag asset base archive sums expected actual reported expected_version
 
     need curl
     need tar
@@ -180,13 +180,12 @@ download_release() {
     [[ "$expected" =~ ^[0-9A-Fa-f]{64}$ ]] || fail "SHA256SUMS does not contain a valid digest for ${asset}"
 
     actual="$(sha256sum "$archive" | awk '{print $1}')"
-    [[ "$actual" == "$expected" ]] || fail "SHA-256 verification failed for ${asset}"
+    [[ "${actual,,}" == "${expected,,}" ]] || fail "SHA-256 verification failed for ${asset}"
 
     tar -xzf "$archive" -C "$TMP_DOWNLOAD_DIR"
     BUILT_BINARY="${TMP_DOWNLOAD_DIR}/chatgpt-bridge"
     [[ -x "$BUILT_BINARY" ]] || fail "release archive did not contain an executable chatgpt-bridge"
 
-    local reported expected_version
     reported="$($BUILT_BINARY version)" || fail "downloaded binary failed its version check"
     expected_version="${tag#v}"
     [[ "$reported" == "chatgpt-bridge ${expected_version}" ]] \
@@ -260,7 +259,9 @@ done
 
 [[ -n "$SERVICE_USER" ]] || fail "could not determine service user; pass --service-user USER"
 [[ "$SERVICE_USER" != "root" ]] || fail "refusing to run the bridge service as root"
-[[ $FROM_SOURCE -eq 1 || -z "$REQUESTED_VERSION" || "$REQUESTED_VERSION" != "" ]] || true
+if [[ $FROM_SOURCE -eq 1 && -n "$REQUESTED_VERSION" ]]; then
+    fail "--version cannot be combined with --from-source"
+fi
 
 need awk
 need getent
