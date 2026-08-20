@@ -557,7 +557,12 @@ impl ConfigText {
 
     fn ngrok_enabled(&self) -> bool {
         self.value("CHATGPT_BRIDGE_NGROK_ENABLED")
-            .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
     }
 }
 
