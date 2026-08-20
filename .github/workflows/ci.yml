@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -34,3 +34,8 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets --all-features
+
+      - name: CLI help smoke test
+        run: |
+          cargo run --quiet -- help >/dev/null
+          cargo run --quiet -- update --help >/dev/null
