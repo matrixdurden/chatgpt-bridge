@@ -20,8 +20,28 @@ pub struct UpdateOptions {
 }
 
 pub fn run_args(args: &[String]) -> Result<()> {
+    if matches!(args, [flag] if flag == "-h" || flag == "--help") {
+        print_update_help();
+        return Ok(());
+    }
+
     let options = parse_args(args)?;
     run(&options)
+}
+
+pub fn print_main_help_extension() {
+    println!(
+        "\nUpdate commands:\n\
+  update                             Install the latest GitHub Release\n\
+  update --check                     Check whether an update exists\n\
+  update --version VERSION           Install or roll back to a release"
+    );
+}
+
+fn print_update_help() {
+    println!(
+        "Usage:\n  chatgpt-bridge update\n  chatgpt-bridge update --check\n  chatgpt-bridge update --version VERSION"
+    );
 }
 
 fn parse_args(args: &[String]) -> Result<UpdateOptions> {
@@ -35,18 +55,7 @@ fn parse_args(args: &[String]) -> Result<UpdateOptions> {
             check: false,
             version: Some(version.clone()),
         }),
-        [flag] if flag == "-h" || flag == "--help" => {
-            println!(
-                "Usage:\n  chatgpt-bridge update\n  chatgpt-bridge update --check\n  chatgpt-bridge update --version VERSION"
-            );
-            Ok(UpdateOptions {
-                check: true,
-                version: Some(format!("v{}", env!("CARGO_PKG_VERSION"))),
-            })
-        }
-        _ => bail!(
-            "usage: chatgpt-bridge update [--check | --version VERSION]"
-        ),
+        _ => bail!("usage: chatgpt-bridge update [--check | --version VERSION]"),
     }
 }
 
