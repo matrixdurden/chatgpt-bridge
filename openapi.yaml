@@ -27,6 +27,56 @@ components:
               type: string
           required: [code, message]
       required: [error]
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        service:
+          type: string
+          example: chatgpt-bridge
+        version:
+          type: string
+          example: 0.1.0
+      required: [status, service, version]
+
+    InfoResponse:
+      type: object
+      properties:
+        service:
+          type: string
+        version:
+          type: string
+        workspace_root:
+          type: string
+        default_timeout_ms:
+          type: integer
+          minimum: 1
+        max_timeout_ms:
+          type: integer
+          minimum: 1
+        max_output_bytes:
+          type: integer
+          minimum: 1
+        max_file_bytes:
+          type: integer
+          minimum: 1
+        capabilities:
+          type: array
+          items:
+            type: string
+      required:
+        - service
+        - version
+        - workspace_root
+        - default_timeout_ms
+        - max_timeout_ms
+        - max_output_bytes
+        - max_file_bytes
+        - capabilities
+
     ExecRequest:
       type: object
       properties:
@@ -41,6 +91,7 @@ components:
           minimum: 1
           description: Optional timeout in milliseconds. Must not exceed the server maximum.
       required: [command]
+
     ExecResponse:
       type: object
       properties:
@@ -58,6 +109,7 @@ components:
           type: boolean
         duration_ms:
           type: integer
+          minimum: 0
       required:
         - success
         - exit_code
@@ -66,6 +118,7 @@ components:
         - stdout_truncated
         - stderr_truncated
         - duration_ms
+
     ReadFileRequest:
       type: object
       properties:
@@ -73,6 +126,19 @@ components:
           type: string
           description: Workspace-relative UTF-8 text file path.
       required: [path]
+
+    ReadFileResponse:
+      type: object
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        bytes:
+          type: integer
+          minimum: 0
+      required: [path, content, bytes]
+
     WriteFileRequest:
       type: object
       properties:
@@ -88,6 +154,19 @@ components:
           type: boolean
           default: false
       required: [path, content]
+
+    WriteFileResponse:
+      type: object
+      properties:
+        path:
+          type: string
+        bytes:
+          type: integer
+          minimum: 0
+        created:
+          type: boolean
+      required: [path, bytes, created]
+
     ListFilesRequest:
       type: object
       properties:
@@ -99,8 +178,38 @@ components:
           minimum: 1
           maximum: 1000
           default: 200
+
+    DirectoryEntry:
+      type: object
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        kind:
+          type: string
+          enum: [file, directory, symlink, other]
+        size:
+          type: [integer, "null"]
+          minimum: 0
+      required: [name, path, kind, size]
+
+    ListFilesResponse:
+      type: object
+      properties:
+        path:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/DirectoryEntry"
+        truncated:
+          type: boolean
+      required: [path, entries, truncated]
+
 security:
   - bearerAuth: []
+
 paths:
   /health:
     get:
@@ -113,7 +222,8 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/HealthResponse"
+
   /v1/info:
     get:
       operationId: getBridgeInfo
@@ -124,13 +234,14 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/InfoResponse"
         "401":
           description: Unauthorized.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
   /v1/exec:
     post:
       operationId: executeCommand
@@ -169,6 +280,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
   /v1/files/read:
     post:
       operationId: readWorkspaceFile
@@ -185,7 +297,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/ReadFileResponse"
         "401":
           description: Unauthorized.
           content:
@@ -198,6 +310,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
   /v1/files/write:
     post:
       operationId: writeWorkspaceFile
@@ -214,7 +327,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/WriteFileResponse"
         "401":
           description: Unauthorized.
           content:
@@ -227,6 +340,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
   /v1/files/list:
     post:
       operationId: listWorkspaceDirectory
@@ -243,7 +357,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/ListFilesResponse"
         "401":
           description: Unauthorized.
           content:
