@@ -40,6 +40,11 @@ async fn main() -> Result<()> {
     }
 
     let command = cli::parse_args(args)?;
+    if command == CliCommand::Help {
+        cli::execute(command)?;
+        updater::print_main_help_extension();
+        return Ok(());
+    }
     if command != CliCommand::Serve {
         return cli::execute(command);
     }
