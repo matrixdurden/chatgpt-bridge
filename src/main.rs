@@ -5,7 +5,7 @@ mod error;
 mod routes;
 mod workspace;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     Router,
     extract::Request,
@@ -17,10 +17,14 @@ use axum::{
 use axum_server::tls_rustls::RustlsConfig;
 use cli::CliCommand;
 use config::Config;
+use ngrok::{config::ForwarderBuilder, tunnel::EndpointInfo};
 use std::{env, sync::Arc};
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+use url::Url;
+
+const PUBLIC_URL_FILE: &str = "/run/chatgpt-bridge/public-url";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -68,7 +72,9 @@ async fn serve() -> Result<()> {
         .merge(protected)
         .with_state(state);
 
-    if let Some(tls) = &config.tls {
+    if config.ngrok_enabled {
+        serve_with_ngrok(bind, app, &config).await?;
+    } else if let Some(tls) = &config.tls {
         let tls_config = RustlsConfig::from_pem_file(&tls.cert, &tls.key).await?;
         info!(
             %bind,
@@ -95,11 +101,47 @@ async fn serve() -> Result<()> {
     Ok(())
 }
 
+async fn serve_with_ngrok(bind: std::net::SocketAddr, app: Router, config: &Config) -> Result<()> {
+    let listener = TcpListener::bind(bind).await?;
+    let upstream = Url::parse(&format!("http://{bind}"))
+        .context("failed to construct local ngrok upstream URL")?;
+
+    let session = ngrok::Session::builder()
+        .authtoken_from_env()
+        .connect()
+        .await
+        .context("failed to connect to ngrok; check the saved ngrok authtoken")?;
+
+    let tunnel = session
+        .http_endpoint()
+        .listen_and_forward(upstream)
+        .await
+        .context("failed to create ngrok public endpoint")?;
+
+    let public_url = tunnel.url().to_owned();
+    if let Err(error) = tokio::fs::write(PUBLIC_URL_FILE, &public_url).await {
+        warn!(%error, "failed to write public URL state file");
+    }
+
+    info!(
+        %bind,
+        %public_url,
+        workspace = %config.root.display(),
+        version = env!("CARGO_PKG_VERSION"),
+        "chatgpt-bridge public ngrok endpoint started"
+    );
+
+    let result = axum::serve(listener, app).await;
+    drop(tunnel);
+    result?;
+    Ok(())
+}
+
 async fn restore_missing_json_content_type(mut request: Request, next: Next) -> Response {
-    // Tailscale Serve/Funnel has had versions that strip Content-Type from
-    // proxied POST requests. All protected POST endpoints in this bridge are
-    // JSON-only, so restoring the header when it is missing is unambiguous.
-    // Never overwrite a Content-Type explicitly supplied by the caller.
+    // Some reverse proxies have stripped Content-Type from proxied POST requests.
+    // All protected POST endpoints in this bridge are JSON-only, so restoring
+    // the header when it is missing is unambiguous. Never overwrite a value
+    // explicitly supplied by the caller.
     if request.method() == Method::POST && !request.headers().contains_key(CONTENT_TYPE) {
         request
             .headers_mut()

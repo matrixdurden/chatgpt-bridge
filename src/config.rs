@@ -19,6 +19,7 @@ pub struct Config {
     pub token: String,
     pub root: PathBuf,
     pub tls: Option<TlsConfig>,
+    pub ngrok_enabled: bool,
     pub default_timeout_ms: u64,
     pub max_timeout_ms: u64,
     pub max_output_bytes: usize,
@@ -69,7 +70,16 @@ impl Config {
             ),
         };
 
-        if !bind.ip().is_loopback() && tls.is_none() {
+        let ngrok_enabled = parse_bool("CHATGPT_BRIDGE_NGROK_ENABLED", false)?;
+        if ngrok_enabled {
+            if !bind.ip().is_loopback() {
+                bail!("ngrok public mode requires a loopback CHATGPT_BRIDGE_BIND");
+            }
+            if tls.is_some() {
+                bail!("ngrok public mode forwards to local HTTP; clear direct TLS settings first");
+            }
+            required("NGROK_AUTHTOKEN")?;
+        } else if !bind.ip().is_loopback() && tls.is_none() {
             bail!(
                 "refusing to listen on a public interface without TLS; configure a certificate and key first"
             );
@@ -97,6 +107,7 @@ impl Config {
             token,
             root,
             tls,
+            ngrok_enabled,
             default_timeout_ms,
             max_timeout_ms,
             max_output_bytes,
@@ -117,6 +128,15 @@ fn optional(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+fn parse_bool(name: &str, default: bool) -> Result<bool> {
+    let raw = env::var(name).unwrap_or_else(|_| default.to_string());
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => bail!("invalid {name}={raw:?}; expected true or false"),
+    }
 }
 
 fn parse_u64(name: &str, default: u64) -> Result<u64> {

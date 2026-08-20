@@ -8,6 +8,8 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::Path,
     process::{Command, ExitStatus, Output},
+    thread,
+    time::Duration,
 };
 
 const SERVICE: &str = "chatgpt-bridge.service";
@@ -19,6 +21,8 @@ const TLS_DIR: &str = "/etc/chatgpt-bridge/tls";
 const TLS_CERT_FILE: &str = "/etc/chatgpt-bridge/tls/fullchain.pem";
 const TLS_KEY_FILE: &str = "/etc/chatgpt-bridge/tls/privkey.pem";
 const SERVICE_FILE: &str = "/etc/systemd/system/chatgpt-bridge.service";
+const PUBLIC_URL_FILE: &str = "/run/chatgpt-bridge/public-url";
+const NGROK_AUTH_URL: &str = "https://dashboard.ngrok.com/get-started/your-authtoken";
 const DEFAULT_PORT: u16 = 8787;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +110,7 @@ fn parse_start(args: &[String]) -> Result<StartOptions> {
                     .with_context(|| format!("invalid port: {value:?}"))?;
                 if port < 1024 {
                     bail!(
-                        "ports below 1024 are intentionally not used by the unprivileged bridge service; choose 1024-65535 and forward an external port if needed"
+                        "ports below 1024 are intentionally not used by the unprivileged bridge service; choose 1024-65535"
                     );
                 }
                 if options.port.replace(port).is_some() {
@@ -212,10 +216,12 @@ fn start(options: &StartOptions) -> Result<()> {
         ensure_workspace_configured_in(&config)?;
     }
 
+    let direct_tls_requested = options.tls_cert.is_some();
     if let (Some(cert), Some(key)) = (&options.tls_cert, &options.tls_key) {
         import_tls(&config, cert, key)?;
         config.set("CHATGPT_BRIDGE_TLS_CERT", TLS_CERT_FILE);
         config.set("CHATGPT_BRIDGE_TLS_KEY", TLS_KEY_FILE);
+        config.set("CHATGPT_BRIDGE_NGROK_ENABLED", "false");
         changed = true;
     }
 
@@ -227,8 +233,8 @@ fn start(options: &StartOptions) -> Result<()> {
 
     let port = options.port.unwrap_or(current_bind.port());
     let ip = match options.mode {
-        Some(BindMode::Public) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        Some(BindMode::Local) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        Some(BindMode::Public) if direct_tls_requested => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        Some(BindMode::Public | BindMode::Local) => IpAddr::V4(Ipv4Addr::LOCALHOST),
         None => current_bind.ip(),
     };
     let bind = SocketAddr::new(ip, port);
@@ -238,20 +244,40 @@ fn start(options: &StartOptions) -> Result<()> {
         changed = true;
     }
 
-    if options.mode == Some(BindMode::Local) {
-        config.set("CHATGPT_BRIDGE_TLS_CERT", "");
-        config.set("CHATGPT_BRIDGE_TLS_KEY", "");
-        changed = true;
+    match options.mode {
+        Some(BindMode::Public) if !direct_tls_requested => {
+            ensure_ngrok_token(&mut config)?;
+            config.set("CHATGPT_BRIDGE_NGROK_ENABLED", "true");
+            config.set("CHATGPT_BRIDGE_TLS_CERT", "");
+            config.set("CHATGPT_BRIDGE_TLS_KEY", "");
+            changed = true;
+        }
+        Some(BindMode::Public) => {
+            config.set("CHATGPT_BRIDGE_NGROK_ENABLED", "false");
+            changed = true;
+        }
+        Some(BindMode::Local) => {
+            config.set("CHATGPT_BRIDGE_NGROK_ENABLED", "false");
+            config.set("CHATGPT_BRIDGE_TLS_CERT", "");
+            config.set("CHATGPT_BRIDGE_TLS_KEY", "");
+            changed = true;
+        }
+        None => {}
     }
 
-    if !bind.ip().is_loopback() && !config.tls_configured() {
+    let ngrok_enabled = config.ngrok_enabled();
+    if !ngrok_enabled && !bind.ip().is_loopback() && !config.tls_configured() {
         bail!(
-            "public mode requires HTTPS; supply --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem"
+            "direct public mode requires HTTPS; either use `--public` for automatic ngrok HTTPS or supply --tls-cert and --tls-key"
         );
     }
 
     if changed {
         write_config(&config.render())?;
+    }
+
+    if ngrok_enabled {
+        elevated_best_effort("rm", ["-f", PUBLIC_URL_FILE]);
     }
 
     elevated_checked("systemctl", ["enable", SERVICE])?;
@@ -261,19 +287,84 @@ fn start(options: &StartOptions) -> Result<()> {
         elevated_checked("systemctl", ["start", SERVICE])?;
     }
 
-    let scheme = if config.tls_configured() {
-        "https"
+    if ngrok_enabled {
+        println!("Mode: public (ngrok)");
+        println!("Local: http://{bind}");
+        if let Some(public_url) = wait_for_public_url() {
+            println!("Public: {public_url}");
+            println!("GPT Action server: {public_url}");
+        } else {
+            println!("Public URL is not available yet. Check `chatgpt-bridge logs`.");
+        }
     } else {
-        "http"
-    };
-    let visibility = if bind.ip().is_loopback() {
-        "local"
-    } else {
-        "public"
-    };
-    println!("Mode: {visibility}");
-    println!("Listen: {scheme}://{bind}");
+        let scheme = if config.tls_configured() {
+            "https"
+        } else {
+            "http"
+        };
+        let visibility = if bind.ip().is_loopback() {
+            "local"
+        } else {
+            "public (direct)"
+        };
+        println!("Mode: {visibility}");
+        println!("Listen: {scheme}://{bind}");
+    }
+
     Ok(())
+}
+
+fn ensure_ngrok_token(config: &mut ConfigText) -> Result<()> {
+    if config
+        .value("NGROK_AUTHTOKEN")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Ok(());
+    }
+
+    println!("\nPublic mode needs a free ngrok account once.");
+    println!("Open: {NGROK_AUTH_URL}");
+    open_ngrok_auth_page();
+
+    let token = rpassword::prompt_password("Ngrok authtoken: ")?;
+    let token = token.trim();
+    if token.is_empty() {
+        bail!("ngrok authtoken cannot be empty");
+    }
+    if token.contains('\n') || token.contains('\r') {
+        bail!("ngrok authtoken is invalid");
+    }
+
+    config.set("NGROK_AUTHTOKEN", token);
+    println!("Ngrok account connected. This token will not be requested again.");
+    Ok(())
+}
+
+fn open_ngrok_auth_page() {
+    let result = if env::var_os("WSL_DISTRO_NAME").is_some() {
+        Command::new("cmd.exe")
+            .args(["/C", "start", "", NGROK_AUTH_URL])
+            .spawn()
+    } else {
+        Command::new("xdg-open").arg(NGROK_AUTH_URL).spawn()
+    };
+
+    if result.is_err() {
+        // The URL is always printed, so browser launching is only a convenience.
+    }
+}
+
+fn wait_for_public_url() -> Option<String> {
+    for _ in 0..50 {
+        if let Ok(value) = fs::read_to_string(PUBLIC_URL_FILE) {
+            let value = value.trim();
+            if value.starts_with("https://") {
+                return Some(value.to_owned());
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    None
 }
 
 fn validate_workspace(workspace: &str) -> Result<String> {
@@ -463,6 +554,16 @@ impl ConfigText {
                 .value("CHATGPT_BRIDGE_TLS_KEY")
                 .is_some_and(|value| !value.is_empty())
     }
+
+    fn ngrok_enabled(&self) -> bool {
+        self.value("CHATGPT_BRIDGE_NGROK_ENABLED")
+            .is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+    }
 }
 
 fn parse_env_value(value: &str) -> String {
@@ -535,9 +636,11 @@ Usage:\n\
   chatgpt-bridge <command>\n\n\
 Commands:\n\
   start --workspace PATH             Set workspace and start locally\n\
-  start --port PORT                  Change the saved listen port\n\
+  start --workspace PATH --port PORT --public\n\
+                                     Publish automatically with ngrok HTTPS\n\
+  start --public                     Reuse saved workspace/port and publish\n\
   start --public --tls-cert CERT --tls-key KEY\n\
-                                     Publish securely with HTTPS\n\
+                                     Advanced: direct HTTPS without ngrok\n\
   start --local                      Return to localhost-only HTTP mode\n\
   start                              Start with saved settings\n\
   stop                               Stop the service\n\
@@ -551,8 +654,9 @@ Commands:\n\
   serve                              Run the bridge server (used by systemd)\n\
   version                            Show the installed version\n\
   help                               Show this help\n\n\
-Public mode refuses to start without TLS. The service intentionally stays\n\
-unprivileged, so choose a listen port from 1024 through 65535.",
+The first automatic public start asks for an ngrok authtoken once. The token is\n\
+saved in the root-only bridge config. No ngrok binary, router forwarding, TLS\n\
+certificate, Nginx, or privileged port is required.",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -682,7 +786,29 @@ mod tests {
     }
 
     #[test]
-    fn parses_secure_public_start() {
+    fn parses_automatic_public_start() {
+        assert_eq!(
+            parse_args([
+                "start",
+                "--workspace",
+                "/projects",
+                "--port",
+                "8787",
+                "--public",
+            ])
+            .unwrap(),
+            CliCommand::Start(StartOptions {
+                workspace: Some("/projects".to_owned()),
+                port: Some(8787),
+                mode: Some(BindMode::Public),
+                tls_cert: None,
+                tls_key: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_secure_direct_public_start() {
         assert_eq!(
             parse_args([
                 "start",

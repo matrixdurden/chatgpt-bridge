@@ -18,6 +18,8 @@ EXISTING_ROOT_LINE=""
 EXISTING_BIND_LINE=""
 EXISTING_TLS_CERT_LINE=""
 EXISTING_TLS_KEY_LINE=""
+EXISTING_NGROK_ENABLED_LINE=""
+EXISTING_NGROK_TOKEN_LINE=""
 WAS_ACTIVE=0
 
 usage() {
@@ -35,9 +37,11 @@ Options:
 The installer only installs ChatGPT Bridge. Runtime settings belong to the CLI:
 
   chatgpt-bridge start --workspace "/projects"
-  chatgpt-bridge start --port 8787
+  chatgpt-bridge start --workspace "/projects" --port 8787 --public
 
-Public mode requires HTTPS and is configured with `chatgpt-bridge start`.
+Automatic public mode uses the embedded ngrok SDK. No ngrok binary, Nginx,
+router forwarding, or TLS certificate setup is required. The first public start
+asks for an ngrok authtoken once.
 EOF
 }
 
@@ -139,6 +143,8 @@ if as_root test -f "$CONFIG_FILE"; then
     EXISTING_BIND_LINE="$(as_root awk '/^CHATGPT_BRIDGE_BIND=/ { print; exit }' "$CONFIG_FILE" || true)"
     EXISTING_TLS_CERT_LINE="$(as_root awk '/^CHATGPT_BRIDGE_TLS_CERT=/ { print; exit }' "$CONFIG_FILE" || true)"
     EXISTING_TLS_KEY_LINE="$(as_root awk '/^CHATGPT_BRIDGE_TLS_KEY=/ { print; exit }' "$CONFIG_FILE" || true)"
+    EXISTING_NGROK_ENABLED_LINE="$(as_root awk '/^CHATGPT_BRIDGE_NGROK_ENABLED=/ { print; exit }' "$CONFIG_FILE" || true)"
+    EXISTING_NGROK_TOKEN_LINE="$(as_root awk '/^NGROK_AUTHTOKEN=/ { print; exit }' "$CONFIG_FILE" || true)"
 fi
 
 if [[ -z "$TOKEN" ]] && as_root test -f "$CONFIG_FILE"; then
@@ -219,6 +225,18 @@ else
     printf 'CHATGPT_BRIDGE_TLS_KEY=""\n' >>"$TMP_CONFIG"
 fi
 
+if [[ -n "$EXISTING_NGROK_ENABLED_LINE" ]]; then
+    printf '%s\n' "$EXISTING_NGROK_ENABLED_LINE" >>"$TMP_CONFIG"
+else
+    printf 'CHATGPT_BRIDGE_NGROK_ENABLED="false"\n' >>"$TMP_CONFIG"
+fi
+
+if [[ -n "$EXISTING_NGROK_TOKEN_LINE" ]]; then
+    printf '%s\n' "$EXISTING_NGROK_TOKEN_LINE" >>"$TMP_CONFIG"
+else
+    printf 'NGROK_AUTHTOKEN=""\n' >>"$TMP_CONFIG"
+fi
+
 SERVICE_PATH_ENV="${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 cat >"$TMP_SERVICE" <<EOF
@@ -242,6 +260,8 @@ KillMode=mixed
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
+RuntimeDirectory=chatgpt-bridge
+RuntimeDirectoryMode=0700
 
 [Install]
 WantedBy=multi-user.target
@@ -270,11 +290,13 @@ cat <<EOF
 
 ChatGPT Bridge installed.
 
-First start:
+Local start:
   chatgpt-bridge start --workspace "/projects"
 
+Easy public start:
+  chatgpt-bridge start --workspace "/projects" --port 8787 --public
+
 Useful commands:
-  chatgpt-bridge start --port 8787
   chatgpt-bridge status
   chatgpt-bridge logs
   chatgpt-bridge key
@@ -290,3 +312,5 @@ if [[ $TOKEN_WAS_GENERATED -eq 1 ]]; then
 elif [[ $TOKEN_WAS_REUSED -eq 1 ]]; then
     printf '\nThe existing authentication key and runtime settings were preserved.\n'
 fi
+
+printf '\nOn the first `--public` start, the bridge will open/show the ngrok authtoken page and ask for the token once.\n'

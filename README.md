@@ -1,11 +1,11 @@
 # ChatGPT Bridge
 
-A small self-hosted Rust service that lets a ChatGPT Custom GPT work on a remote Linux development workspace.
+A small self-hosted Rust service that lets a ChatGPT Custom GPT work on a Linux development workspace.
 
 It provides a Codex-like loop from web ChatGPT: inspect repositories, run shell commands, read and edit files, build, test, use Git, and iterate.
 
 > [!WARNING]
-> Shell commands run with the permissions of the configured Linux user. Never run the service as `root`. Public mode requires HTTPS and Bearer authentication.
+> Shell commands run with the permissions of the configured Linux user. Never run the service as `root`. Treat the Bearer key like shell access to that user account.
 
 ## Install
 
@@ -15,25 +15,59 @@ cd chatgpt-bridge
 ./install.sh
 ```
 
-First start:
+No ngrok binary, Nginx, TLS certificate, or router configuration is needed for the normal public setup.
+
+## Easy public start
 
 ```bash
-chatgpt-bridge start --workspace "/projects"
+chatgpt-bridge start \
+  --workspace "/home/user/projects" \
+  --port 8787 \
+  --public
 ```
 
-The workspace and runtime settings are saved, so later:
+On the first public start only, ChatGPT Bridge opens or prints ngrok's authtoken page and asks for your ngrok authtoken. The token is entered without echo and saved in `/etc/chatgpt-bridge/config.env`, which is installed with mode `0600`.
+
+After that, `--public` uses the official ngrok Rust SDK embedded directly in ChatGPT Bridge. There is no separate ngrok process to install or manage.
+
+Expected output is similar to:
+
+```text
+Workspace: /home/user/projects
+Mode: public (ngrok)
+Local: http://127.0.0.1:8787
+Public: https://example.ngrok.app
+GPT Action server: https://example.ngrok.app
+```
+
+The workspace, port, public-mode setting, ngrok token, and Bearer key are saved. Later you can simply run:
 
 ```bash
 chatgpt-bridge start
+```
+
+## Local-only mode
+
+```bash
+chatgpt-bridge start \
+  --workspace "/home/user/projects" \
+  --port 8787 \
+  --local
+```
+
+Test it with:
+
+```bash
+curl http://127.0.0.1:8787/health
 ```
 
 ## Commands
 
 ```text
 chatgpt-bridge start --workspace PATH   Set workspace
-chatgpt-bridge start --port PORT        Set listen port
-chatgpt-bridge start --public           Use public interface (TLS required)
-chatgpt-bridge start --local            Return to localhost-only HTTP
+chatgpt-bridge start --port PORT        Set local listen port
+chatgpt-bridge start --public           Publish automatically through ngrok HTTPS
+chatgpt-bridge start --local            Disable the tunnel and use localhost only
 chatgpt-bridge start                     Start with saved settings
 chatgpt-bridge stop                      Stop
 chatgpt-bridge restart                   Restart
@@ -45,59 +79,26 @@ chatgpt-bridge key rotate                Generate a new Bearer key
 chatgpt-bridge uninstall                 Completely remove ChatGPT Bridge
 ```
 
-Ports below `1024` are intentionally rejected because the bridge runs as an unprivileged user. If you want external port `443`, forward it at the router/firewall to an internal bridge port such as `8787`.
+Ports below `1024` are intentionally rejected because the bridge service runs as an unprivileged user. Automatic public mode does not need port `443`; ngrok provides the external HTTPS endpoint and forwards it to the chosen localhost port.
 
-## Local mode
+## Custom GPT Action
 
-Local mode is the default:
+Set `servers` in `openapi.yaml` to the `Public:` URL printed by ChatGPT Bridge:
 
-```bash
-chatgpt-bridge start --workspace "/projects" --port 8787
+```yaml
+servers:
+  - url: https://example.ngrok.app
 ```
 
-Test:
+Then in the GPT Action configuration:
 
-```bash
-curl http://127.0.0.1:8787/health
-```
+1. Paste/import `openapi.yaml`.
+2. Choose API-key authentication.
+3. Choose Bearer authentication.
+4. Enter the value from `chatgpt-bridge key`.
+5. Test `healthCheck` and `getBridgeInfo`.
 
-## Secure public mode
-
-Public mode is HTTPS-only. The bridge refuses to bind to a non-loopback interface unless a certificate and private key are configured.
-
-Use a publicly trusted certificate whose SAN matches the hostname or public IP address clients will use:
-
-```bash
-chatgpt-bridge start \
-  --workspace "/projects" \
-  --port 8787 \
-  --public \
-  --tls-cert "/absolute/path/fullchain.pem" \
-  --tls-key "/absolute/path/privkey.pem"
-```
-
-The certificate and key are copied into managed paths:
-
-```text
-/etc/chatgpt-bridge/tls/fullchain.pem
-/etc/chatgpt-bridge/tls/privkey.pem
-```
-
-The private key is readable only by root and the service user's primary group. The original source files are not required while the bridge is running.
-
-After the first successful public start, settings are saved:
-
-```bash
-chatgpt-bridge start
-```
-
-When a short-lived certificate is renewed, rerun the public start command with the renewed certificate/key paths to import them and restart the service.
-
-To return to localhost-only HTTP:
-
-```bash
-chatgpt-bridge start --local --port 8787
-```
+The schema marks the bridge POST actions as non-consequential so ChatGPT can offer persistent permission instead of asking on every normal tool call. Grant that only if you intend the GPT to have ongoing command/file access to the configured workspace.
 
 ## Bearer key
 
@@ -130,24 +131,20 @@ Current endpoints:
 
 Everything under `/v1/*` requires `Authorization: Bearer <key>`.
 
-The repository includes `openapi.yaml` for a Custom GPT Action.
+## Advanced direct HTTPS mode
 
-## Custom GPT Action
+If you explicitly want to expose the bridge without ngrok, the previous direct HTTPS mode remains available:
 
-Once the public HTTPS endpoint works, set `servers` in `openapi.yaml` to the real endpoint, for example:
-
-```yaml
-servers:
-  - url: https://203.0.113.10:8787
+```bash
+chatgpt-bridge start \
+  --workspace "/home/user/projects" \
+  --port 8787 \
+  --public \
+  --tls-cert "/absolute/path/fullchain.pem" \
+  --tls-key "/absolute/path/privkey.pem"
 ```
 
-Then in the GPT Action configuration:
-
-1. Paste/import `openapi.yaml`.
-2. Choose API-key authentication.
-3. Choose Bearer authentication.
-4. Enter the value from `chatgpt-bridge key`.
-5. Test `healthCheck` and `getBridgeInfo` before executing shell commands.
+When certificate paths are supplied with `--public`, the bridge binds directly to the public interface and does not use ngrok. A publicly trusted certificate is required. For most Custom GPT installations, automatic ngrok mode is simpler.
 
 ## Configuration
 
@@ -156,8 +153,9 @@ Installed files:
 ```text
 /usr/local/bin/chatgpt-bridge
 /etc/chatgpt-bridge/config.env
-/etc/chatgpt-bridge/tls/        # created when TLS is imported
+/etc/chatgpt-bridge/tls/        # only created for advanced direct TLS mode
 /etc/systemd/system/chatgpt-bridge.service
+/run/chatgpt-bridge/            # runtime state while the service is active
 ```
 
 Main environment values:
@@ -166,9 +164,11 @@ Main environment values:
 | --- | --- |
 | `CHATGPT_BRIDGE_TOKEN` | Bearer key. |
 | `CHATGPT_BRIDGE_ROOT` | Workspace root. |
-| `CHATGPT_BRIDGE_BIND` | Saved bind address/port. |
-| `CHATGPT_BRIDGE_TLS_CERT` | Managed TLS certificate path. |
-| `CHATGPT_BRIDGE_TLS_KEY` | Managed TLS private-key path. |
+| `CHATGPT_BRIDGE_BIND` | Local/direct bind address and port. |
+| `CHATGPT_BRIDGE_NGROK_ENABLED` | Enables embedded ngrok public mode. |
+| `NGROK_AUTHTOKEN` | ngrok account token used by embedded public mode. |
+| `CHATGPT_BRIDGE_TLS_CERT` | Managed certificate path for advanced direct TLS mode. |
+| `CHATGPT_BRIDGE_TLS_KEY` | Managed private-key path for advanced direct TLS mode. |
 | `CHATGPT_BRIDGE_SERVICE_USER` | Unprivileged Linux service user. |
 | `CHATGPT_BRIDGE_DEFAULT_TIMEOUT_MS` | Default command timeout. |
 | `CHATGPT_BRIDGE_MAX_TIMEOUT_MS` | Maximum command timeout. |
@@ -183,7 +183,7 @@ git pull
 ./install.sh
 ```
 
-The installer preserves the Bearer key, workspace, bind address, port, and TLS settings.
+The installer preserves the Bearer key, workspace, bind settings, ngrok configuration, and direct TLS settings.
 
 ## Uninstall
 
@@ -191,20 +191,19 @@ The installer preserves the Bearer key, workspace, bind address, port, and TLS s
 chatgpt-bridge uninstall
 ```
 
-This removes the installed binary, configuration, managed TLS copies, systemd service, and legacy installation files. It never deletes the workspace, repositories, Linux user, or Git/SSH credentials.
+This removes the installed binary, configuration, managed TLS copies, systemd service, and saved ngrok token. It never deletes the workspace, repositories, Linux user, or Git/SSH credentials.
 
 ## Security model
 
-- Public mode cannot start without TLS.
+- Automatic public mode keeps the bridge itself on localhost and exposes it through ngrok HTTPS.
 - Bearer authentication is mandatory for `/v1/*`.
 - Bearer keys are 256-bit random values and compared in constant time.
-- Listener defaults to localhost only.
+- ngrok authentication is stored only in the root-only bridge config.
 - The service runs as an unprivileged Linux user.
 - File APIs reject absolute paths, `..` traversal, and symlink escapes.
 - Command working directories must resolve inside the workspace.
 - Command execution has timeouts and output limits.
-- TLS private keys are copied with restricted filesystem permissions.
-- The systemd service uses `NoNewPrivileges` and `PrivateTmp`.
+- The systemd service uses `NoNewPrivileges`, `PrivateTmp`, and a private runtime directory.
 
 The shell itself is not a complete sandbox. Commands still have the operating-system permissions of the configured service user.
 
@@ -216,7 +215,3 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
-
-## Disclaimer
-
-This is an independent project and is not an official OpenAI or ChatGPT product.
