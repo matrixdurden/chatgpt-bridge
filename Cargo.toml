@@ -10,11 +10,14 @@ publish = false
 anyhow = "1"
 axum = { version = "0.8", features = ["json"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
+ngrok = "0.14"
+rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "macros", "net", "process", "rt-multi-thread", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
 
 [profile.release]
 codegen-units = 1
