@@ -4,7 +4,7 @@ use std::{
     env,
     ffi::OsStr,
     fs,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, ExitStatus, Output},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -17,6 +17,37 @@ const SERVICE: &str = "chatgpt-bridge.service";
 pub struct UpdateOptions {
     pub check: bool,
     pub version: Option<String>,
+}
+
+pub fn run_args(args: &[String]) -> Result<()> {
+    let options = parse_args(args)?;
+    run(&options)
+}
+
+fn parse_args(args: &[String]) -> Result<UpdateOptions> {
+    match args {
+        [] => Ok(UpdateOptions::default()),
+        [flag] if flag == "--check" => Ok(UpdateOptions {
+            check: true,
+            version: None,
+        }),
+        [flag, version] if flag == "--version" => Ok(UpdateOptions {
+            check: false,
+            version: Some(version.clone()),
+        }),
+        [flag] if flag == "-h" || flag == "--help" => {
+            println!(
+                "Usage:\n  chatgpt-bridge update\n  chatgpt-bridge update --check\n  chatgpt-bridge update --version VERSION"
+            );
+            Ok(UpdateOptions {
+                check: true,
+                version: Some(format!("v{}", env!("CARGO_PKG_VERSION"))),
+            })
+        }
+        _ => bail!(
+            "usage: chatgpt-bridge update [--check | --version VERSION]"
+        ),
+    }
 }
 
 pub fn run(options: &UpdateOptions) -> Result<()> {
@@ -39,7 +70,10 @@ pub fn run(options: &UpdateOptions) -> Result<()> {
     }
 
     if options.version.is_none() && target_tag == current_tag {
-        println!("chatgpt-bridge {} is already up to date.", env!("CARGO_PKG_VERSION"));
+        println!(
+            "chatgpt-bridge {} is already up to date.",
+            env!("CARGO_PKG_VERSION")
+        );
         return Ok(());
     }
 
@@ -73,7 +107,9 @@ fn latest_release_tag() -> Result<String> {
             api.as_str(),
         ],
     )
-    .context("failed to query the latest GitHub release; is curl installed and is the network reachable?")?;
+    .context(
+        "failed to query the latest GitHub release; is curl installed and is the network reachable?",
+    )?;
 
     let json: Value = serde_json::from_slice(&output.stdout)
         .context("GitHub returned an invalid release response")?;
@@ -227,7 +263,7 @@ fn verify_checksum(archive: &Path, sums: &Path, asset: &str) -> Result<()> {
     Ok(())
 }
 
-fn verify_binary_version(candidate: &PathBuf, tag: &str) -> Result<()> {
+fn verify_binary_version(candidate: &Path, tag: &str) -> Result<()> {
     let output = Command::new(candidate)
         .arg("version")
         .output()
@@ -317,7 +353,26 @@ fn unique_suffix() -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_tag;
+    use super::{UpdateOptions, normalize_tag, parse_args};
+
+    #[test]
+    fn parses_update_options() {
+        assert_eq!(parse_args(&[]).unwrap(), UpdateOptions::default());
+        assert_eq!(
+            parse_args(&["--check".to_owned()]).unwrap(),
+            UpdateOptions {
+                check: true,
+                version: None,
+            }
+        );
+        assert_eq!(
+            parse_args(&["--version".to_owned(), "0.2.0".to_owned()]).unwrap(),
+            UpdateOptions {
+                check: false,
+                version: Some("0.2.0".to_owned()),
+            }
+        );
+    }
 
     #[test]
     fn normalizes_versions() {
@@ -331,5 +386,6 @@ mod tests {
         assert!(normalize_tag("").is_err());
         assert!(normalize_tag("../latest").is_err());
         assert!(normalize_tag("1.0.0 latest").is_err());
+        assert!(parse_args(&["--nope".to_owned()]).is_err());
     }
 }
