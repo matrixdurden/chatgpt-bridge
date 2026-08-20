@@ -7,7 +7,11 @@ mod workspace;
 
 use anyhow::Result;
 use axum::{
-    Router, middleware,
+    Router,
+    extract::Request,
+    http::{HeaderValue, Method, header::CONTENT_TYPE},
+    middleware::{self, Next},
+    response::Response,
     routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
@@ -53,6 +57,7 @@ async fn serve() -> Result<()> {
         .route("/v1/files/read", post(routes::read_file))
         .route("/v1/files/write", post(routes::write_file))
         .route("/v1/files/list", post(routes::list_files))
+        .route_layer(middleware::from_fn(restore_missing_json_content_type))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
@@ -88,4 +93,18 @@ async fn serve() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn restore_missing_json_content_type(mut request: Request, next: Next) -> Response {
+    // Tailscale Serve/Funnel has had versions that strip Content-Type from
+    // proxied POST requests. All protected POST endpoints in this bridge are
+    // JSON-only, so restoring the header when it is missing is unambiguous.
+    // Never overwrite a Content-Type explicitly supplied by the caller.
+    if request.method() == Method::POST && !request.headers().contains_key(CONTENT_TYPE) {
+        request
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    }
+
+    next.run(request).await
 }
