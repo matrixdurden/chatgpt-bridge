@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 
 APP_NAME="chatgpt-bridge"
+REPOSITORY="matrixdurden/chatgpt-bridge"
+RELEASES_URL="https://github.com/${REPOSITORY}/releases"
 BINARY_PATH="/usr/local/bin/chatgpt-bridge"
 LEGACY_UNINSTALL_PATH="/usr/local/bin/chatgpt-bridge-uninstall"
 CONFIG_DIR="/etc/chatgpt-bridge"
@@ -9,9 +11,11 @@ CONFIG_FILE="${CONFIG_DIR}/config.env"
 SERVICE_FILE="/etc/systemd/system/chatgpt-bridge.service"
 DEFAULT_BIND="127.0.0.1:8787"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_USER="${SUDO_USER:-${USER:-}}"
 TOKEN="${CHATGPT_BRIDGE_TOKEN:-}"
+REQUESTED_VERSION=""
+FROM_SOURCE=0
+SOURCE_DIR="${CHATGPT_BRIDGE_SOURCE_DIR:-$(pwd)}"
 TOKEN_WAS_GENERATED=0
 TOKEN_WAS_REUSED=0
 EXISTING_ROOT_LINE=""
@@ -21,27 +25,30 @@ EXISTING_TLS_KEY_LINE=""
 EXISTING_NGROK_ENABLED_LINE=""
 EXISTING_NGROK_TOKEN_LINE=""
 WAS_ACTIVE=0
+TMP_CONFIG=""
+TMP_SERVICE=""
+TMP_DOWNLOAD_DIR=""
+BUILT_BINARY=""
 
 usage() {
     cat <<'EOF'
 ChatGPT Bridge Linux installer
 
 Usage:
+  curl -fsSL https://raw.githubusercontent.com/matrixdurden/chatgpt-bridge/main/install.sh | bash
   ./install.sh [options]
 
 Options:
   --service-user USER    Linux user that will run the bridge.
                          Default: the invoking non-root user.
+  --version VERSION      Install a specific release, for example 0.2.0.
+  --from-source          Build and install the current source checkout.
+  --source-dir PATH      Source checkout used with --from-source.
   -h, --help             Show this help.
 
-The installer only installs ChatGPT Bridge. Runtime settings belong to the CLI:
-
-  chatgpt-bridge start --workspace "/projects"
-  chatgpt-bridge start --workspace "/projects" --port 8787 --public
-
-Automatic public mode uses the embedded ngrok SDK. No ngrok binary, Nginx,
-router forwarding, or TLS certificate setup is required. The first public start
-asks for an ngrok authtoken once.
+Default installation downloads a prebuilt GitHub Release binary, verifies its
+SHA-256 checksum, and installs it. Rust, Cargo, Git, Nginx, and ngrok are not
+required on the target machine.
 EOF
 }
 
@@ -97,11 +104,148 @@ env_quote() {
     printf '"%s"' "$value"
 }
 
+normalize_tag() {
+    local version="$1"
+    local tag
+    version="${version#v}"
+    [[ -n "$version" ]] || fail "version cannot be empty"
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] || fail "invalid version: $1"
+    tag="v${version}"
+    printf '%s\n' "$tag"
+}
+
+release_target() {
+    local os arch
+    os="$(uname -s)"
+    arch="$(uname -m)"
+
+    [[ "$os" == "Linux" ]] || fail "prebuilt installation currently supports Linux only"
+
+    case "$arch" in
+        x86_64|amd64)
+            printf '%s\n' "x86_64-unknown-linux-gnu"
+            ;;
+        aarch64|arm64)
+            printf '%s\n' "aarch64-unknown-linux-gnu"
+            ;;
+        *)
+            fail "no prebuilt release is available for Linux architecture: $arch"
+            ;;
+    esac
+}
+
+resolve_latest_tag() {
+    local effective tag
+    effective="$(curl -fsSL --retry 3 --connect-timeout 10 -o /dev/null -w '%{url_effective}' "${RELEASES_URL}/latest")" \
+        || fail "could not resolve the latest GitHub release"
+    tag="${effective##*/}"
+    [[ "$tag" == v* ]] || fail "GitHub did not return a valid latest release tag"
+    normalize_tag "$tag"
+}
+
+download_release() {
+    local target tag asset base archive sums expected actual name
+
+    need curl
+    need tar
+    need sha256sum
+    need uname
+
+    target="$(release_target)"
+    if [[ -n "$REQUESTED_VERSION" ]]; then
+        tag="$(normalize_tag "$REQUESTED_VERSION")"
+    else
+        tag="$(resolve_latest_tag)"
+    fi
+
+    asset="chatgpt-bridge-${target}.tar.gz"
+    base="${RELEASES_URL}/download/${tag}"
+    TMP_DOWNLOAD_DIR="$(mktemp -d)"
+    archive="${TMP_DOWNLOAD_DIR}/${asset}"
+    sums="${TMP_DOWNLOAD_DIR}/SHA256SUMS"
+
+    printf 'Downloading %s %s for %s...\n' "$APP_NAME" "${tag#v}" "$target"
+    curl -fL --retry 3 --connect-timeout 10 --output "$archive" "${base}/${asset}" \
+        || fail "failed to download release asset: ${asset}"
+    curl -fL --retry 3 --connect-timeout 10 --output "$sums" "${base}/SHA256SUMS" \
+        || fail "failed to download SHA256SUMS"
+
+    expected="$(awk -v asset="$asset" '
+        {
+            name=$2
+            sub(/^\*/, "", name)
+            if (name == asset) { print $1; exit }
+        }
+    ' "$sums")"
+    [[ "$expected" =~ ^[0-9A-Fa-f]{64}$ ]] || fail "SHA256SUMS does not contain a valid digest for ${asset}"
+
+    actual="$(sha256sum "$archive" | awk '{print $1}')"
+    [[ "$actual" == "$expected" ]] || fail "SHA-256 verification failed for ${asset}"
+
+    tar -xzf "$archive" -C "$TMP_DOWNLOAD_DIR"
+    BUILT_BINARY="${TMP_DOWNLOAD_DIR}/chatgpt-bridge"
+    [[ -x "$BUILT_BINARY" ]] || fail "release archive did not contain an executable chatgpt-bridge"
+
+    local reported expected_version
+    reported="$($BUILT_BINARY version)" || fail "downloaded binary failed its version check"
+    expected_version="${tag#v}"
+    [[ "$reported" == "chatgpt-bridge ${expected_version}" ]] \
+        || fail "downloaded binary version mismatch: ${reported}"
+}
+
+build_from_source() {
+    local build_user build_home build_path cargo_bin
+
+    [[ -f "${SOURCE_DIR}/Cargo.toml" ]] || fail "Cargo.toml not found in source directory: ${SOURCE_DIR}"
+
+    build_user="$(id -un)"
+    if [[ ${EUID} -eq 0 ]]; then
+        if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+            build_user="$SUDO_USER"
+        else
+            build_user="$SERVICE_USER"
+        fi
+    fi
+
+    build_home="$(getent passwd "$build_user" | awk -F: '{print $6}')"
+    build_path="${build_home}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    cargo_bin="$(as_user "$build_user" env HOME="$build_home" PATH="$build_path" sh -c 'command -v cargo' || true)"
+    [[ -n "$cargo_bin" ]] || fail "cargo was not found for $build_user; install Rust or use the default prebuilt installer"
+
+    printf 'Building %s from source...\n' "$APP_NAME"
+    as_user "$build_user" env HOME="$build_home" PATH="$build_path" \
+        "$cargo_bin" build --release --manifest-path "${SOURCE_DIR}/Cargo.toml"
+
+    BUILT_BINARY="${SOURCE_DIR}/target/release/chatgpt-bridge"
+    [[ -x "$BUILT_BINARY" ]] || fail "release binary was not produced: $BUILT_BINARY"
+}
+
+cleanup() {
+    [[ -z "$TMP_CONFIG" ]] || rm -f -- "$TMP_CONFIG"
+    [[ -z "$TMP_SERVICE" ]] || rm -f -- "$TMP_SERVICE"
+    [[ -z "$TMP_DOWNLOAD_DIR" ]] || rm -rf -- "$TMP_DOWNLOAD_DIR"
+}
+trap cleanup EXIT
+
 while (($#)); do
     case "$1" in
         --service-user)
             [[ $# -ge 2 ]] || fail "--service-user requires a value"
             SERVICE_USER="$2"
+            shift 2
+            ;;
+        --version)
+            [[ $# -ge 2 ]] || fail "--version requires a value"
+            REQUESTED_VERSION="$2"
+            shift 2
+            ;;
+        --from-source)
+            FROM_SOURCE=1
+            shift
+            ;;
+        --source-dir)
+            [[ $# -ge 2 ]] || fail "--source-dir requires a value"
+            SOURCE_DIR="$2"
             shift 2
             ;;
         -h|--help)
@@ -116,12 +260,14 @@ done
 
 [[ -n "$SERVICE_USER" ]] || fail "could not determine service user; pass --service-user USER"
 [[ "$SERVICE_USER" != "root" ]] || fail "refusing to run the bridge service as root"
+[[ $FROM_SOURCE -eq 1 || -z "$REQUESTED_VERSION" || "$REQUESTED_VERSION" != "" ]] || true
 
 need awk
 need getent
 need id
 need install
 need systemctl
+need mktemp
 if [[ ${EUID} -ne 0 ]]; then
     need sudo
 fi
@@ -162,35 +308,14 @@ fi
 [[ ${#TOKEN} -ge 32 ]] || fail "CHATGPT_BRIDGE_TOKEN must contain at least 32 characters"
 [[ "$TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "CHATGPT_BRIDGE_TOKEN may contain only A-Z, a-z, 0-9, '.', '_', '~', and '-'"
 
-[[ -f "${SCRIPT_DIR}/Cargo.toml" ]] || fail "run install.sh from the ChatGPT Bridge source checkout"
-
-BUILD_USER="$(id -un)"
-if [[ ${EUID} -eq 0 ]]; then
-    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-        BUILD_USER="$SUDO_USER"
-    else
-        BUILD_USER="$SERVICE_USER"
-    fi
+if [[ $FROM_SOURCE -eq 1 ]]; then
+    build_from_source
+else
+    download_release
 fi
-BUILD_HOME="$(getent passwd "$BUILD_USER" | awk -F: '{print $6}')"
-BUILD_PATH="${BUILD_HOME}/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-CARGO_BIN="$(as_user "$BUILD_USER" env HOME="$BUILD_HOME" PATH="$BUILD_PATH" sh -c 'command -v cargo' || true)"
-[[ -n "$CARGO_BIN" ]] || fail "cargo was not found for $BUILD_USER; install the Rust toolchain first"
-
-printf 'Building %s...\n' "$APP_NAME"
-as_user "$BUILD_USER" env HOME="$BUILD_HOME" PATH="$BUILD_PATH" \
-    "$CARGO_BIN" build --release --manifest-path "${SCRIPT_DIR}/Cargo.toml"
-
-BUILT_BINARY="${SCRIPT_DIR}/target/release/chatgpt-bridge"
-[[ -x "$BUILT_BINARY" ]] || fail "release binary was not produced: $BUILT_BINARY"
 
 TMP_CONFIG="$(mktemp)"
 TMP_SERVICE="$(mktemp)"
-cleanup() {
-    rm -f -- "$TMP_CONFIG" "$TMP_SERVICE"
-}
-trap cleanup EXIT
 chmod 600 "$TMP_CONFIG" "$TMP_SERVICE"
 
 cat >"$TMP_CONFIG" <<EOF
@@ -286,15 +411,18 @@ if [[ $WAS_ACTIVE -eq 1 && -n "$EXISTING_ROOT_LINE" ]]; then
     as_root systemctl restart chatgpt-bridge.service
 fi
 
+INSTALLED_VERSION="$($BINARY_PATH version 2>/dev/null || true)"
+
 cat <<EOF
 
-ChatGPT Bridge installed.
-
-Local start:
-  chatgpt-bridge start --workspace "/projects"
+ChatGPT Bridge installed${INSTALLED_VERSION:+: ${INSTALLED_VERSION#chatgpt-bridge }}.
 
 Easy public start:
   chatgpt-bridge start --workspace "/projects" --port 8787 --public
+
+Updates:
+  chatgpt-bridge update
+  chatgpt-bridge update --check
 
 Useful commands:
   chatgpt-bridge status
