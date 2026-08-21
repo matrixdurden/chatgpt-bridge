@@ -1,6 +1,6 @@
 [package]
 name = "chatgpt-bridge"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A small self-hosted bridge that gives ChatGPT controlled access to a remote Linux development workspace."
 repository = "https://github.com/matrixdurden/chatgpt-bridge"

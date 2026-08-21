@@ -34,10 +34,12 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
+    let mut args = env::args().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|arg| arg == "update") {
         return updater::run_args(&args[1..]);
     }
+
+    args = apply_start_defaults(args)?;
 
     let command = cli::parse_args(args)?;
     if command == CliCommand::Help {
@@ -50,6 +52,33 @@ async fn main() -> Result<()> {
     }
 
     serve().await
+}
+
+fn apply_start_defaults(mut args: Vec<String>) -> Result<Vec<String>> {
+    if !args.first().is_some_and(|arg| arg == "start") {
+        return Ok(args);
+    }
+
+    let has_workspace = args.iter().skip(1).any(|arg| arg == "--workspace");
+    let has_mode = args
+        .iter()
+        .skip(1)
+        .any(|arg| arg == "--public" || arg == "--local");
+
+    if !has_workspace {
+        let cwd = env::current_dir().context("failed to determine the current directory")?;
+        let cwd = cwd
+            .to_str()
+            .context("current directory path must be valid UTF-8")?;
+        args.push("--workspace".to_owned());
+        args.push(cwd.to_owned());
+    }
+
+    if !has_mode {
+        args.push("--public".to_owned());
+    }
+
+    Ok(args)
 }
 
 async fn serve() -> Result<()> {
@@ -160,4 +189,38 @@ async fn restore_missing_json_content_type(mut request: Request, next: Next) -> 
     }
 
     next.run(request).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_start_defaults;
+
+    #[test]
+    fn start_defaults_to_current_workspace_and_public_mode() {
+        let args = apply_start_defaults(vec!["start".to_owned()]).unwrap();
+        assert_eq!(args.first().map(String::as_str), Some("start"));
+        assert!(args.iter().any(|arg| arg == "--workspace"));
+        assert!(args.iter().any(|arg| arg == "--public"));
+    }
+
+    #[test]
+    fn explicit_start_options_are_preserved() {
+        let args = apply_start_defaults(vec![
+            "start".to_owned(),
+            "--workspace".to_owned(),
+            "/tmp".to_owned(),
+            "--local".to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            args,
+            vec![
+                "start".to_owned(),
+                "--workspace".to_owned(),
+                "/tmp".to_owned(),
+                "--local".to_owned(),
+            ]
+        );
+    }
 }
