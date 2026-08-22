@@ -38,7 +38,13 @@ pub async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
         max_timeout_ms: state.config.max_timeout_ms,
         max_output_bytes: state.config.max_output_bytes,
         max_file_bytes: state.config.max_file_bytes,
-        capabilities: vec!["exec", "file_read", "file_write", "file_list"],
+        capabilities: vec![
+            "exec",
+            "file_read",
+            "file_write",
+            "file_list",
+            "checkpoints",
+        ],
     })
 }
 
@@ -75,6 +81,7 @@ pub async fn exec(
         )));
     }
 
+    let _change_guard = state.change_lock.lock().await;
     let cwd_relative = request.cwd.as_deref().unwrap_or("");
     let cwd = workspace::resolve_existing(&state.config.root, cwd_relative).await?;
     let cwd_metadata = fs::metadata(&cwd)
@@ -204,6 +211,7 @@ pub async fn write_file(
     State(state): State<AppState>,
     Json(request): Json<WriteFileRequest>,
 ) -> Result<Json<WriteFileResponse>, ApiError> {
+    let _change_guard = state.change_lock.lock().await;
     let byte_count = request.content.len();
     if byte_count > state.config.max_file_bytes {
         return Err(ApiError::payload_too_large(format!(
@@ -366,4 +374,94 @@ mod tests {
         assert_eq!(value, "abc");
         assert!(!truncated);
     }
+}
+
+#[derive(Deserialize)]
+pub struct BeginChangeRequest {
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+pub async fn begin_change(
+    State(state): State<AppState>,
+    Json(request): Json<BeginChangeRequest>,
+) -> Result<Json<crate::checkpoint::BeginResult>, ApiError> {
+    let scope_relative = request.cwd.as_deref().unwrap_or("");
+    let scope = workspace::resolve_existing(&state.config.root, scope_relative).await?;
+    let metadata = fs::metadata(&scope).await.map_err(|error| {
+        ApiError::internal(format!("failed to inspect checkpoint scope: {error}"))
+    })?;
+    if !metadata.is_dir() {
+        return Err(ApiError::bad_request("checkpoint cwd must be a directory"));
+    }
+
+    let _guard = state.change_lock.lock().await;
+    let store = std::sync::Arc::clone(&state.checkpoints);
+    let result = tokio::task::spawn_blocking(move || store.begin(&scope))
+        .await
+        .map_err(|error| ApiError::internal(format!("checkpoint task failed: {error}")))??;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+pub struct FinishChangeRequest {
+    transaction_id: String,
+}
+
+pub async fn finish_change(
+    State(state): State<AppState>,
+    Json(request): Json<FinishChangeRequest>,
+) -> Result<Json<crate::checkpoint::FinishResult>, ApiError> {
+    let _guard = state.change_lock.lock().await;
+    let store = std::sync::Arc::clone(&state.checkpoints);
+    let transaction_id = request.transaction_id;
+    let result = tokio::task::spawn_blocking(move || store.finish(&transaction_id))
+        .await
+        .map_err(|error| ApiError::internal(format!("checkpoint task failed: {error}")))??;
+    Ok(Json(result))
+}
+
+#[derive(Deserialize)]
+pub struct RestoreCheckpointRequest {
+    id: String,
+    #[serde(default)]
+    force: bool,
+}
+
+pub async fn restore_checkpoint(
+    State(state): State<AppState>,
+    Json(request): Json<RestoreCheckpointRequest>,
+) -> Result<Json<crate::checkpoint::RestoreResult>, ApiError> {
+    let _guard = state.change_lock.lock().await;
+    let store = std::sync::Arc::clone(&state.checkpoints);
+    let id = request.id;
+    let force = request.force;
+    let result = tokio::task::spawn_blocking(move || store.restore(&id, force))
+        .await
+        .map_err(|error| ApiError::internal(format!("checkpoint task failed: {error}")))??;
+    Ok(Json(result))
+}
+
+pub async fn undo_checkpoint(
+    State(state): State<AppState>,
+    Json(request): Json<RestoreCheckpointRequest>,
+) -> Result<Json<crate::checkpoint::RestoreResult>, ApiError> {
+    let _guard = state.change_lock.lock().await;
+    let store = std::sync::Arc::clone(&state.checkpoints);
+    let id = request.id;
+    let force = request.force;
+    let result = tokio::task::spawn_blocking(move || store.undo(&id, force))
+        .await
+        .map_err(|error| ApiError::internal(format!("checkpoint task failed: {error}")))??;
+    Ok(Json(result))
+}
+
+pub async fn list_checkpoints(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<crate::checkpoint::CheckpointInfo>>, ApiError> {
+    let store = std::sync::Arc::clone(&state.checkpoints);
+    let result = tokio::task::spawn_blocking(move || store.list())
+        .await
+        .map_err(|error| ApiError::internal(format!("checkpoint task failed: {error}")))??;
+    Ok(Json(result))
 }

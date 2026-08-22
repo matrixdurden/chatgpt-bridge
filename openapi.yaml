@@ -207,6 +207,80 @@ components:
           type: boolean
       required: [path, entries, truncated]
 
+    ChangeSummary:
+      type: object
+      properties:
+        created: { type: integer, minimum: 0 }
+        modified: { type: integer, minimum: 0 }
+        deleted: { type: integer, minimum: 0 }
+      required: [created, modified, deleted]
+
+    BeginChangeRequest:
+      type: object
+      properties:
+        cwd:
+          type: string
+          description: Workspace-relative project directory to checkpoint. Empty or omitted means workspace root.
+
+    BeginChangeResponse:
+      type: object
+      properties:
+        transaction_id: { type: string }
+        scope: { type: string }
+      required: [transaction_id, scope]
+
+    FinishChangeRequest:
+      type: object
+      properties:
+        transaction_id: { type: string }
+      required: [transaction_id]
+
+    FinishChangeResponse:
+      type: object
+      properties:
+        changed: { type: boolean }
+        change_id:
+          type: [string, "null"]
+          description: Stable checkpoint ID. Null when the transaction produced no filesystem changes.
+        summary:
+          $ref: "#/components/schemas/ChangeSummary"
+      required: [changed, change_id, summary]
+
+    RestoreCheckpointRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Full checkpoint ID such as chg-A1B2C3 or its unique short suffix A1B2C3.
+        force:
+          type: boolean
+          default: false
+          description: Preserve uncheckpointed current changes in a safety checkpoint before restoring.
+      required: [id]
+
+    RestoreCheckpointResponse:
+      type: object
+      properties:
+        restored_to: { type: string }
+        scope: { type: string }
+        safety_checkpoint_id:
+          type: [string, "null"]
+      required: [restored_to, scope, safety_checkpoint_id]
+
+    CheckpointInfo:
+      type: object
+      properties:
+        id: { type: string }
+        scope: { type: string }
+        parent:
+          type: [string, "null"]
+        created_at_ms:
+          type: integer
+          minimum: 0
+        summary:
+          $ref: "#/components/schemas/ChangeSummary"
+      required: [id, scope, parent, created_at_ms, summary]
+
 security:
   - bearerAuth: []
 
@@ -368,3 +442,102 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /v1/changes:
+    get:
+      operationId: listCheckpoints
+      summary: List completed workspace change checkpoints, newest first.
+      responses:
+        "200":
+          description: Visible change checkpoints.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CheckpointInfo"
+
+  /v1/changes/begin:
+    post:
+      operationId: beginChange
+      x-openai-isConsequential: false
+      summary: Start a checkpoint transaction before mutating a project.
+      description: >-
+        Call this immediately before the first mutating command or file write for a user request.
+        The snapshot store is external to the project and never snapshots .git, .hg, or .svn metadata.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BeginChangeRequest"
+      responses:
+        "200":
+          description: Transaction started.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BeginChangeResponse"
+
+  /v1/changes/finish:
+    post:
+      operationId: finishChange
+      x-openai-isConsequential: false
+      summary: Finish a checkpoint transaction after edits and tests.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FinishChangeRequest"
+      responses:
+        "200":
+          description: Returns a change ID only when filesystem state changed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FinishChangeResponse"
+
+  /v1/changes/restore:
+    post:
+      operationId: restoreCheckpoint
+      x-openai-isConsequential: false
+      summary: Restore a project to the state after a selected change checkpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestoreCheckpointRequest"
+      responses:
+        "200":
+          description: Workspace restored to the selected checkpoint.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreCheckpointResponse"
+        "409":
+          description: Current workspace contains uncheckpointed changes and force was not enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/changes/undo:
+    post:
+      operationId: undoCheckpoint
+      x-openai-isConsequential: false
+      summary: Restore the state immediately before a selected change checkpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestoreCheckpointRequest"
+      responses:
+        "200":
+          description: Workspace restored to the checkpoint parent state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreCheckpointResponse"

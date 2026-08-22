@@ -1,4 +1,5 @@
 mod auth;
+mod checkpoint;
 mod cli;
 mod config;
 mod error;
@@ -16,6 +17,7 @@ use axum::{
     routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
+use checkpoint::CheckpointStore;
 use cli::CliCommand;
 use config::Config;
 use ngrok::{config::ForwarderBuilder, tunnel::EndpointInfo};
@@ -30,6 +32,8 @@ const PUBLIC_URL_FILE: &str = "/run/chatgpt-bridge/public-url";
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
+    pub checkpoints: Arc<CheckpointStore>,
+    pub change_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[tokio::main]
@@ -91,8 +95,14 @@ async fn serve() -> Result<()> {
 
     let config = Arc::new(Config::from_env()?);
     let bind = config.bind;
+    let checkpoints =
+        Arc::new(CheckpointStore::new(&config.root).map_err(|error| {
+            anyhow::anyhow!("failed to initialize checkpoint store: {error:?}")
+        })?);
     let state = AppState {
         config: Arc::clone(&config),
+        checkpoints,
+        change_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let protected = Router::new()
@@ -101,6 +111,11 @@ async fn serve() -> Result<()> {
         .route("/v1/files/read", post(routes::read_file))
         .route("/v1/files/write", post(routes::write_file))
         .route("/v1/files/list", post(routes::list_files))
+        .route("/v1/changes", get(routes::list_checkpoints))
+        .route("/v1/changes/begin", post(routes::begin_change))
+        .route("/v1/changes/finish", post(routes::finish_change))
+        .route("/v1/changes/restore", post(routes::restore_checkpoint))
+        .route("/v1/changes/undo", post(routes::undo_checkpoint))
         .route_layer(middleware::from_fn(restore_missing_json_content_type))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

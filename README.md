@@ -141,6 +141,18 @@ Then in the GPT Action configuration:
 4. Enter the value from `chatgpt-bridge key`.
 5. Test `healthCheck` and `getBridgeInfo`.
 
+For checkpoint-aware editing, add this behavior to the GPT instructions:
+
+```text
+Before the first mutating workspace operation for a user request, call beginChange for the project directory.
+Use the returned transaction_id for that request.
+After all edits, builds, and tests are complete, call finishChange.
+If finishChange returns a change_id, show it at the top of the final response.
+Do not show a change ID when changed=false.
+When the user asks to go back to a change ID, call restoreCheckpoint.
+When the user explicitly asks to undo that change itself, call undoCheckpoint.
+```
+
 The schema marks the bridge POST actions as non-consequential so ChatGPT can offer persistent permission instead of asking on every normal tool call. Grant that only if you intend the GPT to have ongoing command/file access to the configured workspace.
 
 ## Bearer key
@@ -171,6 +183,23 @@ Current endpoints:
 - `POST /v1/files/read`
 - `POST /v1/files/write`
 - `POST /v1/files/list`
+- `GET /v1/changes`
+- `POST /v1/changes/begin`
+- `POST /v1/changes/finish`
+- `POST /v1/changes/restore`
+- `POST /v1/changes/undo`
+
+### Checkpoints and undo
+
+Checkpoint data is stored outside the configured workspace, under `~/.local/state/chatgpt-bridge/checkpoints` by default (or under `CHATGPT_BRIDGE_STATE_DIR` when set). It uses a content-addressed object store, so unchanged file contents are reused across checkpoints. The project does not need to be a Git repository.
+
+To keep normal coding checkpoints fast and compact, common generated/cache directories (`node_modules`, `target`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.cache`, `dist`, `build`, `.next`, `.nuxt`, and `coverage`) are excluded by default. Set `CHATGPT_BRIDGE_CHECKPOINT_INCLUDE_GENERATED=true` for full project snapshots except VCS metadata.
+
+Checkpoint scopes are project directories relative to the configured workspace root. `.git`, `.hg`, and `.svn` metadata directories are never snapshotted, restored, or deleted by the checkpoint engine, including nested repositories. Symlinks are recorded as links and are never followed while snapshotting.
+
+`beginChange` captures the pre-edit state. `finishChange` creates a visible `chg-XXXXXX` checkpoint only when the filesystem changed. `restoreCheckpoint` means “make the project look exactly as it did after this checkpoint”; later checkpoint objects remain available, so restoring an older ID does not destroy history. `undoCheckpoint` restores the selected checkpoint's parent state.
+
+If files changed outside checkpoint history, restore returns `409 Conflict` by default. With `force=true`, those current files are first preserved in a hidden `safe-XXXXXX` checkpoint and its ID is returned.
 
 Everything under `/v1/*` requires `Authorization: Bearer <key>`.
 
@@ -207,6 +236,8 @@ Main environment values:
 | --- | --- |
 | `CHATGPT_BRIDGE_TOKEN` | Bearer key. |
 | `CHATGPT_BRIDGE_ROOT` | Workspace root. |
+| `CHATGPT_BRIDGE_STATE_DIR` | Optional checkpoint-state base directory. Defaults to the service user state directory. |
+| `CHATGPT_BRIDGE_CHECKPOINT_INCLUDE_GENERATED` | Include generated/cache directories in checkpoints. Defaults to `false`. |
 | `CHATGPT_BRIDGE_BIND` | Local/direct bind address and port. |
 | `CHATGPT_BRIDGE_NGROK_ENABLED` | Enables embedded ngrok public mode. |
 | `NGROK_AUTHTOKEN` | ngrok account token used by embedded public mode. |
@@ -249,6 +280,7 @@ This removes the installed binary, configuration, managed TLS copies, systemd se
 - File APIs reject absolute paths, `..` traversal, and symlink escapes.
 - Command working directories must resolve inside the workspace.
 - Command execution has timeouts and output limits.
+- Checkpoints are stored outside the workspace and never modify VCS metadata directories.
 - The systemd service uses `NoNewPrivileges`, `PrivateTmp`, and a private runtime directory.
 
 The shell itself is not a complete sandbox. Commands still have the operating-system permissions of the configured service user.
