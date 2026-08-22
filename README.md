@@ -5,7 +5,7 @@ A small self-hosted Rust service that lets a ChatGPT Custom GPT work on a Linux 
 It provides a Codex-like loop from web ChatGPT: inspect repositories, run shell commands, read and edit files, build, test, use Git, and iterate.
 
 > [!WARNING]
-> Shell commands run with the permissions of the configured Linux user. Never run the service as `root`. Treat the Bearer key like shell access to that user account.
+> Shell commands run with the permissions of the configured Linux user. Never run the service as `root`. Treat the Bearer key like shell access to user account.
 
 ## Install
 
